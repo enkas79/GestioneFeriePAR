@@ -7,7 +7,7 @@ import os
 import pathlib
 
 # --- INFO VERSIONE E AGGIORNAMENTI ---
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.0.2"
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = "enkas79"
