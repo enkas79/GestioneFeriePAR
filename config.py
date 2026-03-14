@@ -11,7 +11,7 @@ APP_VERSION = "2.0.2"
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = "enkas79"
-GITHUB_REPO = "https://github.com/enkas79/GestioneFeriePAR.git"
+GITHUB_REPO = "GestioneFeriePAR"
 
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
