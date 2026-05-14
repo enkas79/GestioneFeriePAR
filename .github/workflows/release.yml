@@ -39,7 +39,8 @@ jobs:
     - name: Installa le librerie necessarie
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt6 pypdf pyinstaller
+        # AGGIUNTO Pillow qui
+        pip install PyQt6 pypdf Pillow pyinstaller
 
     - name: Creazione Cartella Eseguibile (PyInstaller)
       shell: bash
@@ -51,7 +52,8 @@ jobs:
         else
           echo "Nessuna icona trovata: eseguo la build standard senza icona."
         fi
-        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS main.py
+        # AGGIUNTI I FLAG --hidden-import E --collect-all PER PIL E pypdf
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
 
     - name: Creazione script Inno Setup (.iss)
       run: |
@@ -127,7 +129,8 @@ jobs:
     - name: Installa le librerie necessarie
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt6 pypdf pyinstaller
+        # AGGIUNTO Pillow qui
+        pip install PyQt6 pypdf Pillow pyinstaller
 
     - name: Creazione Eseguibile Linux (PyInstaller)
       shell: bash
@@ -140,7 +143,8 @@ jobs:
         else
           echo "Nessuna icona trovata: eseguo la build standard senza icona."
         fi
-        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS main.py
+        # AGGIUNTI I FLAG --hidden-import E --collect-all PER PIL E pypdf
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
 
     - name: Impacchettamento nel formato Debian (.deb)
       shell: bash
