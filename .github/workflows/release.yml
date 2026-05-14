@@ -1,41 +1,199 @@
 name: Compila e Rilascia Automaticamente
 
-# Questo script si avvia SOLO quando su GitHub viene creato un tag che inizia con "v" (es. v0.0.2)
+# Si avvia creando un tag che inizia con "v" (es. v2.1.0)
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-and-release:
-    name: Compila Eseguibile Windows
+  # ==========================================
+  # JOB 1: BUILD PER WINDOWS (Installer .exe)
+  # ==========================================
+  build-windows:
+    name: Compila Installer Windows
     runs-on: windows-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Estrai il codice dal repository
-        uses: actions/checkout@v4
+    - name: Checkout del codice
+      uses: actions/checkout@v4
 
-      - name: Prepara l'ambiente Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Estrai versione dal Tag
+      shell: bash
+      run: |
+        # Rimuove la 'v' iniziale dal nome del tag (es. v2.1.0 -> 2.1.0)
+        VERSION=${GITHUB_REF_NAME#v}
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      - name: Installa le librerie necessarie
-        run: |
-          python -m pip install --upgrade pip
-          pip install PyQt6 pypdf pyinstaller
+    - name: Prepara l'ambiente Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Compila il programma (.exe)
-        run: |
-          pyinstaller --noconsole --onefile --name GestioneFeriePAR main.py
+    - name: Installa le librerie necessarie
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyQt6 pypdf pyinstaller
 
-      - name: Crea la Release su GitHub e carica l'eseguibile
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/GestioneFeriePAR.exe
-          name: Versione ${{ github.ref_name }}
-          body: "Aggiornamento automatico generato da GitHub Actions."
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Creazione Cartella Eseguibile (PyInstaller)
+      shell: bash
+      run: |
+        ICON_ARGS=""
+        if [ -f "icon.ico" ]; then
+          ICON_ARGS="--icon=icon.ico --add-data icon.ico;."
+          echo "Trovata icon.ico: la includo nella build."
+        else
+          echo "Nessuna icona trovata: eseguo la build standard senza icona."
+        fi
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS main.py
+
+    - name: Creazione script Inno Setup (.iss)
+      run: |
+        $iconLine = ""
+        if (Test-Path "icon.ico") {
+            $iconLine = "SetupIconFile=icon.ico"
+        }
+
+        $issContent = @"
+        [Setup]
+        AppName=Gestione Ferie e PAR
+        AppVersion=$env:VERSION
+        AppPublisher=Enrico Martini
+        DefaultDirName={autopf}\GestioneFeriePAR
+        DefaultGroupName=Gestione Ferie e PAR
+        OutputDir=Output_Installer
+        OutputBaseFilename=GestioneFeriePAR_Setup_v$env:VERSION
+        Compression=lzma2
+        SolidCompression=yes
+        PrivilegesRequired=admin
+        $iconLine
+
+        [Files]
+        Source: "dist\GestioneFeriePAR\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+        [Icons]
+        Name: "{group}\Gestione Ferie e PAR"; Filename: "{app}\GestioneFeriePAR.exe"; IconFilename: "{app}\GestioneFeriePAR.exe"
+        Name: "{autodesktop}\Gestione Ferie e PAR"; Filename: "{app}\GestioneFeriePAR.exe"; IconFilename: "{app}\GestioneFeriePAR.exe"
+        "@
+        Set-Content -Path "setup_config.iss" -Value $issContent
+
+    - name: Compilazione Installer (Inno Setup)
+      run: |
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup_config.iss
+
+    - name: Pubblica la Release su GitHub (Windows)
+      uses: softprops/action-gh-release@v2
+      with:
+        files: Output_Installer/GestioneFeriePAR_Setup_v${{ env.VERSION }}.exe
+        name: Gestione Ferie/PAR v${{ env.VERSION }}
+        body: "Aggiornamento rilasciato automaticamente tramite GitHub Actions."
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+  # ==========================================
+  # JOB 2: BUILD PER LINUX (.deb)
+  # ==========================================
+  build-linux:
+    name: Compila Pacchetto Linux
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout del codice
+      uses: actions/checkout@v4
+
+    - name: Estrai versione dal Tag
+      shell: bash
+      run: |
+        VERSION=${GITHUB_REF_NAME#v}
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+    - name: Installazione dipendenze di sistema (Debian/Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y imagemagick dpkg-dev
+
+    - name: Prepara l'ambiente Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Installa le librerie necessarie
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyQt6 pypdf pyinstaller
+
+    - name: Creazione Eseguibile Linux (PyInstaller)
+      shell: bash
+      run: |
+        ICON_ARGS=""
+        if [ -f "icon.ico" ]; then
+          # Nota: Su Linux si usa i due punti ':' per separare i path in --add-data
+          ICON_ARGS="--icon=icon.ico --add-data icon.ico:."
+          echo "Trovata icon.ico: la includo nella build."
+        else
+          echo "Nessuna icona trovata: eseguo la build standard senza icona."
+        fi
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS main.py
+
+    - name: Impacchettamento nel formato Debian (.deb)
+      shell: bash
+      run: |
+        VERSION=${{ env.VERSION }}
+        DEB_DIR="GestioneFeriePAR_v${VERSION}_amd64"
+        
+        # 1. Crea la struttura delle cartelle standard di Linux
+        mkdir -p $DEB_DIR/DEBIAN
+        mkdir -p $DEB_DIR/opt/GestioneFeriePAR
+        mkdir -p $DEB_DIR/usr/share/applications
+
+        # 2. Copia l'applicazione dentro /opt/
+        cp -r dist/GestioneFeriePAR/* $DEB_DIR/opt/GestioneFeriePAR/
+        chmod +x $DEB_DIR/opt/GestioneFeriePAR/GestioneFeriePAR
+
+        # 3. Crea il file 'control' necessario al package manager APT/dpkg
+        cat <<EOF > $DEB_DIR/DEBIAN/control
+        Package: gestione-ferie-par
+        Version: ${VERSION}
+        Section: utils
+        Priority: optional
+        Architecture: amd64
+        Maintainer: Enrico Martini
+        Description: Gestione Ferie/PAR - Software per il calcolo e monitoraggio delle ferie.
+        EOF
+
+        # 4. Gestione dinamica dell'icona per Linux
+        ICON_LINE=""
+        if [ -f "icon.ico" ]; then
+          mkdir -p $DEB_DIR/usr/share/icons/hicolor/256x256/apps
+          convert icon.ico[0] -resize 256x256 $DEB_DIR/usr/share/icons/hicolor/256x256/apps/gestione-ferie-par.png || true
+          ICON_LINE="Icon=gestione-ferie-par"
+        fi
+
+        # 5. Crea il file .desktop per farlo comparire nel menu delle applicazioni
+        cat <<EOF > $DEB_DIR/usr/share/applications/gestione-ferie-par.desktop
+        [Desktop Entry]
+        Version=${VERSION}
+        Name=Gestione Ferie e PAR
+        Comment=Calcolo e gestione delle ferie
+        Exec=/opt/GestioneFeriePAR/GestioneFeriePAR
+        ${ICON_LINE}
+        Terminal=false
+        Type=Application
+        Categories=Office;Utility;
+        EOF
+
+        # 6. Compila finalmente il pacchetto .deb
+        dpkg-deb --build $DEB_DIR
+
+    - name: Pubblica la Release su GitHub (Linux)
+      uses: softprops/action-gh-release@v2
+      with:
+        files: GestioneFeriePAR_v${{ env.VERSION }}_amd64.deb
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
