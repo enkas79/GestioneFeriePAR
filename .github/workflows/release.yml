@@ -1,10 +1,11 @@
 name: Compila e Rilascia Automaticamente
 
-# Si avvia creando un tag che inizia con "v" (es. v2.1.0)
+# Si avvia in automatico SOLO quando viene modificato il file "version.txt" sul branch main
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
+    paths:
+      - 'version.txt'
   workflow_dispatch:
 
 permissions:
@@ -24,11 +25,10 @@ jobs:
     - name: Checkout del codice
       uses: actions/checkout@v4
 
-    - name: Estrai versione dal Tag
+    - name: Leggi la versione da version.txt
       shell: bash
       run: |
-        # Rimuove la 'v' iniziale dal nome del tag (es. v2.1.0 -> 2.1.0)
-        VERSION=${GITHUB_REF_NAME#v}
+        VERSION=$(cat version.txt)
         echo "VERSION=$VERSION" >> $GITHUB_ENV
 
     - name: Prepara l'ambiente Python
@@ -90,6 +90,7 @@ jobs:
     - name: Pubblica la Release su GitHub (Windows)
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: v${{ env.VERSION }}
         files: Output_Installer/GestioneFeriePAR_Setup_v${{ env.VERSION }}.exe
         name: Gestione Ferie/PAR v${{ env.VERSION }}
         body: "Aggiornamento rilasciato automaticamente tramite GitHub Actions."
@@ -107,10 +108,10 @@ jobs:
     - name: Checkout del codice
       uses: actions/checkout@v4
 
-    - name: Estrai versione dal Tag
+    - name: Leggi la versione da version.txt
       shell: bash
       run: |
-        VERSION=${GITHUB_REF_NAME#v}
+        VERSION=$(cat version.txt)
         echo "VERSION=$VERSION" >> $GITHUB_ENV
 
     - name: Installazione dipendenze di sistema (Debian/Ubuntu)
@@ -194,6 +195,7 @@ jobs:
     - name: Pubblica la Release su GitHub (Linux)
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: v${{ env.VERSION }}
         files: GestioneFeriePAR_v${{ env.VERSION }}_amd64.deb
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
