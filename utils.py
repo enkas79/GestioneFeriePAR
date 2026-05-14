@@ -58,6 +58,22 @@ def decimal_to_hhmm(val: float) -> float:
     m = round((abs_val - h) * 60)
     return sign * (h + m / 100.0)
 
+def format_ore_decimali(val: float, decimali: int = 2) -> str:
+    """
+    Formatta un valore in ore decimali per la visualizzazione finale.
+
+    Esempi:
+        3.5  -> "3,5 h"
+        7.25 -> "7,25 h"
+        8.0  -> "8 h"
+    """
+    valore = round(val, decimali)
+    s = f"{valore:.{decimali}f}".replace('.', ',')
+    s = s.rstrip('0').rstrip(',')
+    if s == '-0':
+        s = '0'
+    return f"{s} h"
+
 def parse_ore_zucchetti(s: str) -> float:
     """
     Legge il valore ore dalla busta Zucchetti e lo restituisce decimale.

@@ -5,7 +5,7 @@ Costruisce la finestra grafica utilizzando le classi di PyQt6.
 
 import os
 from datetime import date
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QDateEdit, QDoubleSpinBox,
@@ -249,7 +249,8 @@ class CalcolatoreFeriePAR(QMainWindow):
             date_trovate = self.dm.calendario.aggiorna_da_testo(testo)
             QMessageBox.information(
                 dlg, "Analisi Completata",
-                f"Aggiunte {date_trovate} date valide al Calendario Collettivo."
+                f"Aggiunte {date_trovate} date valide al Calendario Collettivo.\n"
+                "Le date del calendario vengono scalate automaticamente dai saldi come giornate intere da 8h."
             )
             self.salva_dati_su_file()
             self.aggiorna_tabella_storico()
@@ -312,7 +313,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         grid.addWidget(QLabel("Tipo:"), 1, 0)
         grid.addWidget(self.combo_tipo, 1, 1)
         grid.addWidget(self.check_giorno_intero, 1, 2)
-        grid.addWidget(QLabel("Ore (es 3,30):"), 1, 3)
+        grid.addWidget(QLabel("Ore da inserire (HH,MM es. 3,30 = 3h30m):"), 1, 3)
         grid.addWidget(self.spin_ore, 1, 4)
         grid.addWidget(btn_add, 1, 5, Qt.AlignmentFlag.AlignRight)
 
@@ -336,12 +337,18 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         self.tab_storico = QTableWidget()
         self.tab_storico.setColumnCount(3)
-        self.tab_storico.setHorizontalHeaderLabels(["Data", "Tipo", "Ore"])
-        self.tab_storico.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tab_storico.setHorizontalHeaderLabels(["Data", "Tipo", "Ore inserite"])
+
+        # Allineamento dinamico delle colonne dello storico
+        self.tab_storico.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.tab_storico.horizontalHeader().setStretchLastSection(True)
+
         self.tab_storico.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tab_storico.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tab_storico.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tab_storico.setAlternatingRowColors(True)
+        self.tab_storico.setToolTip("Doppio clic sulla colonna 'Tipo' per cambiare rapidamente da FERIE a PAR e viceversa.")
+        self.tab_storico.cellDoubleClicked.connect(self.on_storico_double_click)
 
         hbox_btn = QHBoxLayout()
         btn_rimuovi = QPushButton("Rimuovi Selezionati  (Del)")
@@ -360,11 +367,11 @@ class CalcolatoreFeriePAR(QMainWindow):
         vbox_storico.addLayout(hbox_btn)
         group_storico.setLayout(vbox_storico)
 
-        group_saldi = QGroupBox("Saldi e Contatori (Calcolo Autonomo)")
+        group_saldi = QGroupBox("Saldi e ore disponibili")
         vbox_saldi = QVBoxLayout()
 
         hbox_hdr = QHBoxLayout()
-        lbl_fifo = QLabel("Maturato automatico su mesi chiusi.")
+        lbl_fifo = QLabel("Calcolo automatico su mesi chiusi. Valori finali in ore decimali: 3,5 h = 3 ore e mezza.")
         lbl_fifo.setStyleSheet("color: #666; font-style: italic;")
         btn_edit = QPushButton("Modifica Manuale Res.AP")
         btn_edit.setObjectName("btn_edit_res")
@@ -376,11 +383,15 @@ class CalcolatoreFeriePAR(QMainWindow):
         vbox_saldi.addLayout(hbox_hdr)
 
         self.tab_saldi = QTableWidget()
-        self.tab_saldi.setColumnCount(7)
+        self.tab_saldi.setColumnCount(8) # Aggiunta colonna Presunto a fine anno
         self.tab_saldi.setHorizontalHeaderLabels([
-            "Tipo", "Diritto", "Res.AP", "Maturato", "Goduto", "Res.Netto", "SALDO TOT"
+            "Tipo", "Diritto annuo", "Residuo AP", "Maturato ad oggi", "Usato totale", "Residuo AP rimasto", "Disponibili oggi", "Presunto fine anno"
         ])
-        self.tab_saldi.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        # Allineamento dinamico delle colonne dello specchietto dei saldi
+        self.tab_saldi.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.tab_saldi.horizontalHeader().setStretchLastSection(True)
+
         self.tab_saldi.verticalHeader().setVisible(False)
         self.tab_saldi.setRowCount(2)
         self.tab_saldi.setItem(0, 0, QTableWidgetItem(config.TIPO_FERIE))
@@ -388,17 +399,17 @@ class CalcolatoreFeriePAR(QMainWindow):
         vbox_saldi.addWidget(self.tab_saldi)
         vbox_saldi.addSpacing(10)
 
-        lbl_f = QLabel("Disponibilità Ferie:")
+        lbl_f = QLabel("Ferie disponibili oggi:")
         lbl_f.setStyleSheet("font-weight: bold;")
         self.bar_ferie = QProgressBar()
         self.bar_ferie.setTextVisible(True)
-        self.bar_ferie.setFormat("%v ore")
+        self.bar_ferie.setFormat("0 h disponibili")
 
-        lbl_p = QLabel("Disponibilità PAR:")
+        lbl_p = QLabel("PAR disponibili oggi:")
         lbl_p.setStyleSheet("font-weight: bold;")
         self.bar_par = QProgressBar()
         self.bar_par.setTextVisible(True)
-        self.bar_par.setFormat("%v ore")
+        self.bar_par.setFormat("0 h disponibili")
 
         vbox_saldi.addWidget(lbl_f)
         vbox_saldi.addWidget(self.bar_ferie)
@@ -459,7 +470,11 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.aggiorna_tabella_storico()
 
     def _aggiorna_combo_anni(self) -> None:
-        anni = sorted({item["data"].year() for item in self.dm.storico_assenze}, reverse=True)
+        anni = sorted(
+            {item["data"].year() for item in self.dm.storico_assenze}
+            | {item["data"].year() for item in self.dm.calendario.assenze_collettive_programmate()},
+            reverse=True
+        )
         self.combo_filtro_anno.blockSignals(True)
         self.combo_filtro_anno.clear()
         self.combo_filtro_anno.addItem("Tutti")
@@ -467,31 +482,55 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.combo_filtro_anno.addItem(str(a))
         self.combo_filtro_anno.blockSignals(False)
 
+    def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
+        """Unisce storico reale e calendario collettivo, evitando doppi conteggi."""
+        righe: List[Dict[str, Any]] = [
+            {**item, "origine": "Storico"} for item in self.dm.storico_assenze
+        ]
+        date_storico = {
+            item["data"].toString(config.DATE_FORMAT_INTERNAL)
+            for item in self.dm.storico_assenze
+        }
+
+        for item in self.dm.calendario.assenze_collettive_programmate():
+            key = item["data"].toString(config.DATE_FORMAT_INTERNAL)
+            if key not in date_storico:
+                righe.append(item)
+
+        righe.sort(key=lambda x: (x["data"], x["tipo"], x.get("origine", "")))
+        return righe
+
     def aggiorna_tabella_storico(self) -> None:
         filtro = self.combo_filtro_anno.currentText()
         self.tab_storico.setRowCount(0)
 
-        for item in self.dm.storico_assenze:
+        for item in self._assenze_effettive_e_programmate():
             if filtro != "Tutti" and str(item["data"].year()) != filtro:
                 continue
 
             row = self.tab_storico.rowCount()
             self.tab_storico.insertRow(row)
 
+            origine = item.get("origine", "Storico")
             is_cal = self.dm.calendario.is_collettivo(item["data"])
-            tipo_display = f"{item['tipo']} (Cal)" if is_cal else item["tipo"]
+            if origine == "Calendario":
+                tipo_display = f"{item['tipo']} (Calendario)"
+            elif is_cal:
+                tipo_display = f"{item['tipo']} (Cal)"
+            else:
+                tipo_display = item["tipo"]
 
             it_data = QTableWidgetItem(item["data"].toString(config.DATE_FORMAT_DISPLAY))
             it_tipo = QTableWidgetItem(tipo_display)
-            it_ore = QTableWidgetItem(f"{item['ore']:.2f}")
+            it_ore = QTableWidgetItem(utils.format_ore_decimali(float(item["ore"])))
 
-            if is_cal:
-                color = QColor("#e8f4fd")
+            if is_cal or origine == "Calendario":
+                color = QColor("#e8f4fd") if origine != "Calendario" else QColor("#fff3cd")
                 it_data.setBackground(color)
                 it_tipo.setBackground(color)
                 it_ore.setBackground(color)
                 it_tipo.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-                it_tipo.setForeground(QColor("#005a9e"))
+                it_tipo.setForeground(QColor("#005a9e") if origine != "Calendario" else QColor("#856404"))
 
             self.tab_storico.setItem(row, 0, it_data)
             self.tab_storico.setItem(row, 1, it_tipo)
@@ -549,8 +588,10 @@ class CalcolatoreFeriePAR(QMainWindow):
                 i_data = self.tab_storico.item(row, 0)
                 i_tipo = self.tab_storico.item(row, 1)
                 if i_data and i_tipo:
+                    if "(Calendario)" in i_tipo.text():
+                        continue
                     d = QDate.fromString(i_data.text(), config.DATE_FORMAT_DISPLAY)
-                    t = i_tipo.text().replace(" (Cal)", "")
+                    t = i_tipo.text().replace(" (Cal)", "").replace(" (Calendario)", "")
                     for i, a in enumerate(self.dm.storico_assenze):
                         if a["data"] == d and a["tipo"] == t:
                             del self.dm.storico_assenze[i]
@@ -559,6 +600,38 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.aggiorna_tabella_storico()
             self.salva_dati_su_file()
             self.calcola()
+
+    def on_storico_double_click(self, row: int, col: int) -> None:
+        """
+        Gestisce il doppio clic sullo storico per commutare il tipo di assenza.
+        """
+        if col != 1:  # Modifica consentita solo sulla colonna "Tipo"
+            return
+
+        item_data = self.tab_storico.item(row, 0)
+        item_tipo = self.tab_storico.item(row, 1)
+        if not item_data or not item_tipo:
+            return
+
+        tipo_testo = item_tipo.text()
+
+        # Le date inserite da mail non possono essere modificate dalla UI di sistema, va modificata la mail
+        if "(Cal)" in tipo_testo or "(Calendario)" in tipo_testo:
+            QMessageBox.information(self, "Info", "Le date caricate dal Calendario Aziendale non possono essere modificate da qui.\nPer rimuoverle o cambiarle, modifica il blocco di testo del Calendario.")
+            return
+
+        d_str = item_data.text()
+        d_qdate = QDate.fromString(d_str, config.DATE_FORMAT_DISPLAY)
+
+        # Cerca l'occorrenza esatta nello storico e inverti
+        for a in self.dm.storico_assenze:
+            if a["data"] == d_qdate and a["tipo"] == tipo_testo:
+                a["tipo"] = config.TIPO_PAR if a["tipo"] == config.TIPO_FERIE else config.TIPO_FERIE
+                self.salva_dati_su_file()
+                self.calcola()
+                self._aggiorna_combo_anni()
+                self.aggiorna_tabella_storico()
+                break
 
     def calcola(self) -> None:
         qd = self.date_assunzione.date()
@@ -571,8 +644,10 @@ class CalcolatoreFeriePAR(QMainWindow):
         god_f_cal, god_p_cal = 0.0, 0.0
         god_f_totale, god_p_totale = 0.0, 0.0
 
-        for x in self.dm.storico_assenze:
-            is_cal = self.dm.calendario.is_collettivo(x["data"])
+        for x in self._assenze_effettive_e_programmate():
+            if x.get("origine") == "Calendario" and x["data"].year() != today.year:
+                continue
+            is_cal = self.dm.calendario.is_collettivo(x["data"]) or x.get("origine") == "Calendario"
             if x["tipo"] == config.TIPO_FERIE:
                 god_f_totale += x["ore"]
                 if is_cal: god_f_cal += x["ore"]
@@ -594,39 +669,50 @@ class CalcolatoreFeriePAR(QMainWindow):
         self._aggiorna_riga(1, self._ultimo_calc_par, self.bar_par, config.TIPO_PAR)
 
     def _aggiorna_riga(self, row: int, r: Dict[str, float], bar: QProgressBar, tipo: str) -> None:
-        self.tab_saldi.setItem(row, 1, QTableWidgetItem(f"{r['diritto']:.3f}"))
-        self.tab_saldi.setItem(row, 2, QTableWidgetItem(f"{r['res_ap']:.3f}"))
-        self.tab_saldi.setItem(row, 3, QTableWidgetItem(f"{r['maturato']:.3f}"))
-        self.tab_saldi.setItem(row, 4, QTableWidgetItem(f"{r['goduto_tot']:.3f}"))
+        """Aggiorna la riga dei saldi usando ore decimali leggibili per l'utente."""
+        self.tab_saldi.setItem(row, 1, QTableWidgetItem(utils.format_ore_decimali(r["diritto"])))
+        self.tab_saldi.setItem(row, 2, QTableWidgetItem(utils.format_ore_decimali(r["res_ap"])))
+        self.tab_saldi.setItem(row, 3, QTableWidgetItem(utils.format_ore_decimali(r["maturato"])))
+        self.tab_saldi.setItem(row, 4, QTableWidgetItem(utils.format_ore_decimali(r["goduto_tot"])))
 
-        it_ap = QTableWidgetItem(f"{r['res_ap_netto']:.3f}")
+        it_ap = QTableWidgetItem(utils.format_ore_decimali(r["res_ap_netto"]))
         if r["res_ap_netto"] == 0 and r["res_ap"] > 0:
             it_ap.setForeground(QColor("orange"))
         elif r["res_ap_netto"] > 0:
             it_ap.setForeground(QColor("blue"))
         self.tab_saldi.setItem(row, 5, it_ap)
 
-        it_s = QTableWidgetItem(f"{r['saldo']:.3f}")
+        it_s = QTableWidgetItem(utils.format_ore_decimali(r["saldo"]))
         it_s.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         it_s.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         it_s.setForeground(QColor("#d9534f") if r["saldo"] < 0 else QColor("#5cb85c"))
         self.tab_saldi.setItem(row, 6, it_s)
 
+        # Nuova colonna: Presunto fine anno
+        it_presunto = QTableWidgetItem(utils.format_ore_decimali(r["presunto_fine_anno"]))
+        it_presunto.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self.tab_saldi.setItem(row, 7, it_presunto)
+
         totale = max(r["res_ap"] + r["diritto"], 1.0)
-        sval = max(int(r["saldo"]), 0)
+        saldo = max(r["saldo"], 0.0)
+        percentuale = min(max(saldo / totale, 0.0), 1.0)
+
         if r["saldo"] < 0:
             style = "QProgressBar::chunk { background-color: #d9534f; }"
-        elif r["saldo"] < 40:
+        elif percentuale < 0.25:
             style = "QProgressBar::chunk { background-color: #f0ad4e; }"
         else:
             style = "QProgressBar::chunk { background-color: #5cb85c; }"
 
-        bar.setRange(0, int(totale))
-        bar.setValue(sval)
+        bar.setRange(0, 1000)
+        bar.setValue(int(percentuale * 1000))
+        bar.setFormat(f"{utils.format_ore_decimali(r['saldo'])} disponibili")
         bar.setStyleSheet(style)
 
         if r["saldo"] < 0:
-            self.lbl_avviso.setText(f"⚠️ Attenzione: saldo {tipo} negativo ({r['saldo']:.3f} ore)!")
+            self.lbl_avviso.setText(
+                f"⚠️ Attenzione: saldo {tipo} negativo ({utils.format_ore_decimali(r['saldo'])})!"
+            )
             self.lbl_avviso.setStyleSheet("color: #d9534f; font-weight: bold;")
         else:
             if self._ultimo_calc_ferie.get("saldo", 0) >= 0 and self._ultimo_calc_par.get("saldo", 0) >= 0:
@@ -744,11 +830,12 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         def tr(label: str, r: Dict[str, float]) -> str:
             return (f"<tr><td><b>{label}</b></td>"
-                    f"<td>{r.get('diritto', 0):.3f}</td>"
-                    f"<td>{r.get('res_ap', 0):.3f}</td>"
-                    f"<td>{r.get('maturato', 0):.3f}</td>"
-                    f"<td>{r.get('goduto_tot', 0):.3f}</td>"
-                    f"<td class='s'>{r.get('saldo', 0):.3f}</td></tr>")
+                    f"<td>{utils.format_ore_decimali(r.get('diritto', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('res_ap', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('maturato', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('goduto_tot', 0))}</td>"
+                    f"<td class='s'>{utils.format_ore_decimali(r.get('saldo', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('presunto_fine_anno', 0))}</td></tr>")
 
         html = f"""<html><head><style>
             body{{font-family:Arial,sans-serif;font-size:11pt;}}
@@ -766,10 +853,11 @@ class CalcolatoreFeriePAR(QMainWindow):
             <p><b>Dipendente:</b> {self.txt_nominativo.text()}</p>
             <p><b>Matricola:</b> {self.txt_matricola.text()}</p>
             <p><b>Data Assunzione:</b> {self.date_assunzione.text()}</p>
-            <br><h3>Dettaglio Saldi:</h3><br>
+            <br><h3>Dettaglio saldi:</h3><p><b>Nota:</b> valori espressi in ore decimali. 3,5 h = 3 ore e mezza.</p>
+            <p><b>Calendario:</b> le date collettive programmate sono gia' scalate dai saldi come giornate intere da 8h, se non gia' presenti nello storico.</p><br>
             <table>
-                <tr><th>Tipo</th><th>Diritto Annuo</th><th>Residuo AP</th>
-                    <th>Maturato</th><th>Goduto Totale</th><th>SALDO FINALE</th></tr>
+                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP</th>
+                    <th>Maturato ad oggi</th><th>Usato totale</th><th>Disponibili oggi</th><th>Presunto fine anno</th></tr>
                 {tr("FERIE", r_f)}
                 {tr("PAR", r_p)}
             </table><br><br>

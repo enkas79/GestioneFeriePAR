@@ -38,9 +38,7 @@ class UpdateManager:
             Tuple[bool, str, str]: (Aggiornamento disponibile, Nuova versione, URL della release)
         """
         try:
-            # Creiamo la richiesta aggiungendo uno User-Agent (richiesto dalle API GitHub)
             req = urllib.request.Request(config.GITHUB_API_URL, headers={'User-Agent': 'GestioneFeriePAR'})
-
             with urllib.request.urlopen(req, timeout=3) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
@@ -49,7 +47,6 @@ class UpdateManager:
                     if not latest_version:
                         return False, config.APP_VERSION, ""
 
-                    # Funzione interna per estrarre solo i numeri dalla stringa (es. "v1.0.2" -> (1, 0, 2))
                     def parse_version(v: str) -> Tuple[int, ...]:
                         numeri = re.findall(r'\d+', v)
                         return tuple(map(int, numeri)) if numeri else (0,)
@@ -57,13 +54,11 @@ class UpdateManager:
                     v_latest = parse_version(latest_version)
                     v_current = parse_version(config.APP_VERSION)
 
-                    # Se la versione su GitHub è maggiore di quella locale
                     if v_latest > v_current:
                         html_url = data.get("html_url", config.GITHUB_RELEASES_URL)
                         return True, latest_version, html_url
 
         except Exception as e:
-            # Silenziamo l'errore per non far crashare l'app in assenza di rete o limiti API
             print(f"Errore controllo aggiornamenti: {e}")
 
         return False, config.APP_VERSION, ""
@@ -75,6 +70,7 @@ class CalendarManager:
     def __init__(self) -> None:
         self.testo_mail: str = ""
         self.date_collettive: Set[str] = set()
+        self.tipi_collettivi: Dict[str, str] = {}
 
     def aggiorna_da_testo(self, testo: str) -> int:
         """
@@ -88,6 +84,7 @@ class CalendarManager:
         """
         self.testo_mail = testo
         self.date_collettive.clear()
+        self.tipi_collettivi.clear()
 
         mesi_it: Dict[str, int] = {
             "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
@@ -104,6 +101,8 @@ class CalendarManager:
 
             m_year = re.search(r'\b(20\d{2})\b', linea_lower)
             year_esteso = int(m_year.group(1)) if m_year else anno_corrente
+
+            tipo_collettivo = self._tipo_da_linea(linea_lower)
 
             pat_range = r'da[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s*(?:([a-z]+)\s+)?(?:20\d{2}\s+)?a[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s+([a-z]+)'
             m_range = re.search(pat_range, linea_lower)
@@ -124,7 +123,7 @@ class CalendarManager:
                         curr = start_date
                         while curr <= end_date:
                             if not utils.is_giorno_festivo(curr):
-                                self.date_collettive.add(curr.toString(config.DATE_FORMAT_INTERNAL))
+                                self._aggiungi_data_collettiva(curr, tipo_collettivo)
                             curr = curr.addDays(1)
                     continue
 
@@ -143,7 +142,7 @@ class CalendarManager:
                         if 1 <= d_val <= 31:
                             qdate = QDate(year_esteso, mese_trovato, d_val)
                             if qdate.isValid() and not utils.is_giorno_festivo(qdate):
-                                self.date_collettive.add(qdate.toString(config.DATE_FORMAT_INTERNAL))
+                                self._aggiungi_data_collettiva(qdate, tipo_collettivo)
                     except ValueError:
                         continue
 
@@ -156,15 +155,47 @@ class CalendarManager:
                         y += 2000
                     qdate = QDate(y, m, d)
                     if qdate.isValid() and not utils.is_giorno_festivo(qdate):
-                        self.date_collettive.add(qdate.toString(config.DATE_FORMAT_INTERNAL))
+                        self._aggiungi_data_collettiva(qdate, tipo_collettivo)
                 except ValueError:
                     continue
 
         return len(self.date_collettive)
 
+    def _tipo_da_linea(self, linea_lower: str) -> str:
+        """Deduce il tipo assenza dalla riga del calendario aziendale."""
+        if re.search(r'\bpar\b', linea_lower):
+            return config.TIPO_PAR
+        if re.search(r'\bferie\b', linea_lower):
+            return config.TIPO_FERIE
+        return config.TIPO_FERIE
+
+    def _aggiungi_data_collettiva(self, qdate: QDate, tipo: str) -> None:
+        """Registra una data collettiva con il relativo tipo FERIE/PAR."""
+        key = qdate.toString(config.DATE_FORMAT_INTERNAL)
+        self.date_collettive.add(key)
+        self.tipi_collettivi[key] = tipo
+
     def is_collettivo(self, qdate: QDate) -> bool:
         """Verifica se una data specifica rientra nei giorni collettivi."""
         return qdate.toString(config.DATE_FORMAT_INTERNAL) in self.date_collettive
+
+    def tipo_collettivo(self, qdate: QDate) -> str:
+        """Restituisce il tipo FERIE/PAR associato alla data collettiva."""
+        return self.tipi_collettivi.get(qdate.toString(config.DATE_FORMAT_INTERNAL), config.TIPO_FERIE)
+
+    def assenze_collettive_programmate(self) -> List[Dict[str, Any]]:
+        """Restituisce le date collettive come assenze virtuali da 8 ore."""
+        result: List[Dict[str, Any]] = []
+        for key in sorted(self.date_collettive):
+            qdate = QDate.fromString(key, config.DATE_FORMAT_INTERNAL)
+            if qdate.isValid():
+                result.append({
+                    "data": qdate,
+                    "tipo": self.tipi_collettivi.get(key, config.TIPO_FERIE),
+                    "ore": config.MAX_ORE_GIORNALIERE,
+                    "origine": "Calendario",
+                })
+        return result
 
 
 class DataManager:
@@ -221,8 +252,7 @@ class DataManager:
         except (OSError, json.JSONDecodeError, ValueError, KeyError):
             return False
 
-    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[
-        bool, str]:
+    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
         """Salva i dati correnti su file JSON effettuando un backup preventivo."""
         self.nominativo = nominativo
         self.matricola = matricola
@@ -336,7 +366,7 @@ class BustaPageParser:
             pat_g = r"(\d{2})[A-Z][\s\d,]*?(132|134)[\s,]+(-?\d{1,2},\d{2})"
             for giorno_str, codice, ore_str in re.findall(pat_g, tc):
                 try:
-                    data_q = QDate(result["anno"], result["mese"], int(giorno_str))  # type: ignore
+                    data_q = QDate(result["anno"], result["mese"], int(giorno_str))
                     if data_q.isValid():
                         result["giornate"].append({
                             "data": data_q,
@@ -396,6 +426,9 @@ class CalcolatoreLogica:
         maturato_netto -= consumo_mat_normale
         saldo = res_ap_netto + maturato_netto
 
+        # Calcolo proiezione a fine anno assumendo rateo annuale completo
+        presunto_fine_anno = res_ap + diritto - (goduto_normale + goduto_cal)
+
         return {
             "diritto": diritto,
             "res_ap": res_ap,
@@ -403,4 +436,5 @@ class CalcolatoreLogica:
             "goduto_tot": goduto_normale + goduto_cal,
             "res_ap_netto": res_ap_netto,
             "saldo": saldo,
+            "presunto_fine_anno": presunto_fine_anno
         }
