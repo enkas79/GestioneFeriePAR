@@ -38,7 +38,9 @@ class UpdateManager:
             Tuple[bool, str, str]: (Aggiornamento disponibile, Nuova versione, URL della release)
         """
         try:
+            # Creiamo la richiesta aggiungendo uno User-Agent (richiesto dalle API GitHub)
             req = urllib.request.Request(config.GITHUB_API_URL, headers={'User-Agent': 'GestioneFeriePAR'})
+
             with urllib.request.urlopen(req, timeout=3) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
@@ -47,6 +49,7 @@ class UpdateManager:
                     if not latest_version:
                         return False, config.APP_VERSION, ""
 
+                    # Funzione interna per estrarre solo i numeri dalla stringa (es. "v1.0.2" -> (1, 0, 2))
                     def parse_version(v: str) -> Tuple[int, ...]:
                         numeri = re.findall(r'\d+', v)
                         return tuple(map(int, numeri)) if numeri else (0,)
@@ -54,11 +57,13 @@ class UpdateManager:
                     v_latest = parse_version(latest_version)
                     v_current = parse_version(config.APP_VERSION)
 
+                    # Se la versione su GitHub è maggiore di quella locale
                     if v_latest > v_current:
                         html_url = data.get("html_url", config.GITHUB_RELEASES_URL)
                         return True, latest_version, html_url
 
         except Exception as e:
+            # Silenziamo l'errore per non far crashare l'app in assenza di rete o limiti API
             print(f"Errore controllo aggiornamenti: {e}")
 
         return False, config.APP_VERSION, ""
@@ -70,6 +75,9 @@ class CalendarManager:
     def __init__(self) -> None:
         self.testo_mail: str = ""
         self.date_collettive: Set[str] = set()
+        # Mappa data ISO -> tipo assenza collettiva (FERIE/PAR).
+        # Serve per scalare automaticamente le date del calendario dai saldi,
+        # anche quando non sono state inserite manualmente nello storico.
         self.tipi_collettivi: Dict[str, str] = {}
 
     def aggiorna_da_testo(self, testo: str) -> int:
@@ -167,6 +175,8 @@ class CalendarManager:
             return config.TIPO_PAR
         if re.search(r'\bferie\b', linea_lower):
             return config.TIPO_FERIE
+        # Default prudente: in assenza di indicazione, mantiene il vecchio comportamento
+        # di sola marcatura calendario e usa FERIE come tipo scalabile.
         return config.TIPO_FERIE
 
     def _aggiungi_data_collettiva(self, qdate: QDate, tipo: str) -> None:
@@ -223,48 +233,15 @@ class DataManager:
         self.storico_assenze.clear()
         self.calendario.aggiorna_da_testo("")
 
-    def carica(self) -> bool:
-        """Carica i dati utente dal file di salvataggio. Restituisce True se riesce."""
-        if not os.path.exists(config.FILE_DATI):
-            return False
-        try:
-            with open(config.FILE_DATI, 'r', encoding='utf-8') as f:
-                raw = json.load(f)
-            self.nominativo = raw.get("nominativo", "")
-            self.matricola = raw.get("matricola", "")
-            self.data_assunzione = raw.get("data_assunzione", self.data_assunzione)
-            self.res_ap_ferie = float(raw.get("res_ap_ferie_start", 0.0))
-            self.res_ap_par = float(raw.get("res_ap_par_start", 0.0))
-            self.includi_patrono = raw.get("includi_patrono", True)
-
-            testo_mail = raw.get("testo_mail_calendario", "")
-            self.calendario.aggiorna_da_testo(testo_mail)
-
-            storico_raw = raw.get("storico_assenze", [])
-            self.storico_assenze.clear()
-            for item in storico_raw:
-                self.storico_assenze.append({
-                    "data": QDate.fromString(item["data"], config.DATE_FORMAT_INTERNAL),
-                    "tipo": item["tipo"],
-                    "ore": float(item["ore"])
-                })
-            return True
-        except (OSError, json.JSONDecodeError, ValueError, KeyError):
-            return False
-
-    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
-        """Salva i dati correnti su file JSON effettuando un backup preventivo."""
-        self.nominativo = nominativo
-        self.matricola = matricola
-        self.data_assunzione = data_assunzione_str
-        self.includi_patrono = includi_patrono
-
+    def _crea_payload(self) -> Dict[str, Any]:
+        """Crea il dizionario JSON completo dei dati correnti."""
         storico_serial = [
             {"data": item["data"].toString(config.DATE_FORMAT_INTERNAL),
              "tipo": item["tipo"], "ore": item["ore"]}
             for item in self.storico_assenze
         ]
-        payload = {
+        return {
+            "versione_app": config.APP_VERSION,
             "nominativo": self.nominativo,
             "matricola": self.matricola,
             "data_assunzione": self.data_assunzione,
@@ -274,11 +251,82 @@ class DataManager:
             "storico_assenze": storico_serial,
             "testo_mail_calendario": self.calendario.testo_mail
         }
+
+    def _applica_payload(self, raw: Dict[str, Any]) -> None:
+        """Sostituisce completamente i dati in memoria con quelli letti da un payload JSON."""
+        self.reset()
+        self.nominativo = raw.get("nominativo", "")
+        self.matricola = raw.get("matricola", "")
+        self.data_assunzione = raw.get("data_assunzione", self.data_assunzione)
+        self.res_ap_ferie = float(raw.get("res_ap_ferie_start", 0.0))
+        self.res_ap_par = float(raw.get("res_ap_par_start", 0.0))
+        self.includi_patrono = raw.get("includi_patrono", True)
+
+        testo_mail = raw.get("testo_mail_calendario", "")
+        self.calendario.aggiorna_da_testo(testo_mail)
+
+        storico_raw = raw.get("storico_assenze", [])
+        self.storico_assenze.clear()
+        for item in storico_raw:
+            qdate = QDate.fromString(item["data"], config.DATE_FORMAT_INTERNAL)
+            if qdate.isValid():
+                self.storico_assenze.append({
+                    "data": qdate,
+                    "tipo": item["tipo"],
+                    "ore": float(item["ore"])
+                })
+        self.storico_assenze.sort(key=lambda x: x["data"])
+
+    def _leggi_payload_da_file(self, path: str) -> Dict[str, Any]:
+        """Legge e restituisce un payload JSON da file."""
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("Il file non contiene un database valido.")
+        return raw
+
+    def _salva_payload_su_file(self, path: str, payload: Dict[str, Any], crea_backup: bool = False) -> None:
+        """Scrive un payload JSON su file, opzionalmente creando un backup preventivo."""
+        if crea_backup and os.path.exists(path):
+            shutil.copy2(path, config.FILE_BACKUP)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=4, ensure_ascii=False)
+
+    def carica(self) -> bool:
+        """Carica i dati utente dal file di salvataggio predefinito."""
+        if not os.path.exists(config.FILE_DATI):
+            return False
         try:
-            if os.path.exists(config.FILE_DATI):
-                shutil.copy2(config.FILE_DATI, config.FILE_BACKUP)
-            with open(config.FILE_DATI, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=4, ensure_ascii=False)
+            self._applica_payload(self._leggi_payload_da_file(config.FILE_DATI))
+            return True
+        except (OSError, json.JSONDecodeError, ValueError, KeyError):
+            return False
+
+    def carica_da_file(self, path: str) -> Tuple[bool, str]:
+        """Carica un database salvato dall'utente e sostituisce completamente i dati correnti."""
+        try:
+            self._applica_payload(self._leggi_payload_da_file(path))
+            return True, ""
+        except (OSError, json.JSONDecodeError, ValueError, KeyError) as e:
+            return False, str(e)
+
+    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
+        """Salva i dati correnti sul database predefinito effettuando un backup preventivo."""
+        self.nominativo = nominativo
+        self.matricola = matricola
+        self.data_assunzione = data_assunzione_str
+        self.includi_patrono = includi_patrono
+
+        try:
+            self._salva_payload_su_file(config.FILE_DATI, self._crea_payload(), crea_backup=True)
+            return True, ""
+        except OSError as e:
+            return False, str(e)
+
+    def salva_su_file(self, path: str) -> Tuple[bool, str]:
+        """Esporta il database corrente in un file JSON scelto dall'utente."""
+        try:
+            self._salva_payload_su_file(path, self._crea_payload(), crea_backup=False)
             return True, ""
         except OSError as e:
             return False, str(e)
@@ -366,7 +414,7 @@ class BustaPageParser:
             pat_g = r"(\d{2})[A-Z][\s\d,]*?(132|134)[\s,]+(-?\d{1,2},\d{2})"
             for giorno_str, codice, ore_str in re.findall(pat_g, tc):
                 try:
-                    data_q = QDate(result["anno"], result["mese"], int(giorno_str))
+                    data_q = QDate(result["anno"], result["mese"], int(giorno_str))  # type: ignore
                     if data_q.isValid():
                         result["giornate"].append({
                             "data": data_q,
@@ -417,24 +465,45 @@ class CalcolatoreLogica:
 
     @staticmethod
     def fifo_avanzato(diritto: float, res_ap: float, maturato: float,
-                      goduto_normale: float, goduto_cal: float) -> Dict[str, float]:
-        """Esegue il logico scarico delle ore privilegiando il Residuo AP prima del Maturato corrente."""
+                      goduto_normale: float, goduto_cal: float,
+                      ap_scalato_anno_precedente: float = 0.0,
+                      res_ap_iniziale: float | None = None) -> Dict[str, float]:
+        """
+        Esegue lo scarico delle ore privilegiando il Residuo AP prima del Maturato corrente.
+
+        Nota importante:
+        - res_ap è il Residuo AP effettivo da usare nel calcolo, già corretto con eventuali
+          assenze dell'anno precedente presenti in calendario/storico.
+        - res_ap_iniziale è il valore inserito/importato, usato solo per visualizzazione.
+        """
+        if res_ap_iniziale is None:
+            res_ap_iniziale = res_ap
+
         maturato_netto = maturato - goduto_cal
-        consumo_ap = min(goduto_normale, res_ap)
+
+        # Se il residuo AP è già negativo dopo lo scarico dell'anno precedente,
+        # non deve generare un consumo AP negativo sulle assenze dell'anno corrente.
+        res_ap_consumabile = max(res_ap, 0.0)
+        consumo_ap = min(goduto_normale, res_ap_consumabile)
         res_ap_netto = res_ap - consumo_ap
         consumo_mat_normale = goduto_normale - consumo_ap
         maturato_netto -= consumo_mat_normale
         saldo = res_ap_netto + maturato_netto
 
-        # Calcolo proiezione a fine anno assumendo rateo annuale completo
-        presunto_fine_anno = res_ap + diritto - (goduto_normale + goduto_cal)
+        goduto_totale = goduto_normale + goduto_cal
+        presunto_fine_anno = res_ap + diritto - goduto_totale
 
         return {
             "diritto": diritto,
+            "res_ap_iniziale": res_ap_iniziale,
+            "ap_scalato_anno_precedente": ap_scalato_anno_precedente,
             "res_ap": res_ap,
             "maturato": maturato,
-            "goduto_tot": goduto_normale + goduto_cal,
+            "goduto_normale": goduto_normale,
+            "goduto_cal": goduto_cal,
+            "goduto_tot": goduto_totale,
+            "maturato_netto": maturato_netto,
             "res_ap_netto": res_ap_netto,
             "saldo": saldo,
-            "presunto_fine_anno": presunto_fine_anno
+            "presunto_fine_anno": presunto_fine_anno,
         }

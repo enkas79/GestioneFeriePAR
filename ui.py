@@ -4,6 +4,7 @@ Costruisce la finestra grafica utilizzando le classi di PyQt6.
 """
 
 import os
+import html
 from datetime import date
 from typing import Any, Dict, List, Tuple
 
@@ -85,10 +86,29 @@ class CalcolatoreFeriePAR(QMainWindow):
                                        border: none; font-size: 11px; padding: 4px; }
             QPushButton#btn_calendario { background-color: #28a745; }
             QPushButton#btn_calendario:hover { background-color: #218838; }
-            QTableWidget { gridline-color: #ddd; font-size: 13px;
-                           alternate-background-color: #f9f9f9; }
-            QHeaderView::section { background-color: #e0e0e0; padding: 4px;
-                                   border: 1px solid #ccc; font-weight: bold; }
+            QTableWidget {
+                gridline-color: #e3e7ee;
+                font-size: 13px;
+                alternate-background-color: #f8fafc;
+                selection-background-color: #cfe8ff;
+                selection-color: #1f2937;
+                border: 1px solid #d7dde6;
+                border-radius: 6px;
+            }
+            QTableWidget::item { padding: 6px; }
+            QTableWidget#tab_saldi {
+                font-size: 12px;
+                background-color: #ffffff;
+                alternate-background-color: #f6f8fb;
+            }
+            QTableWidget#tab_saldi::item { padding: 8px 6px; }
+            QHeaderView::section {
+                background-color: #eef2f7;
+                padding: 6px;
+                border: 1px solid #d0d7e2;
+                font-weight: bold;
+                color: #263445;
+            }
             QMenuBar { background-color: #e0e0e0; font-size: 14px; }
             QMenuBar::item:selected { background-color: #ccc; }
             QProgressBar { border: 1px solid #999; border-radius: 4px; text-align: center;
@@ -104,7 +124,19 @@ class CalcolatoreFeriePAR(QMainWindow):
         mb = self.menuBar()
         file_menu = mb.addMenu("File")
 
-        a_pdf = QAction("Esporta in PDF  (Ctrl+P)", self)
+        a_salva_db = QAction("Salva database come...", self)
+        a_salva_db.triggered.connect(self.salva_database_come)
+        a_carica_db = QAction("Carica database...", self)
+        a_carica_db.triggered.connect(self.carica_database_da_file)
+        a_nuovo_db = QAction("Nuovo database / Azzera dati", self)
+        a_nuovo_db.triggered.connect(self.reset_dati)
+
+        file_menu.addAction(a_salva_db)
+        file_menu.addAction(a_carica_db)
+        file_menu.addAction(a_nuovo_db)
+        file_menu.addSeparator()
+
+        a_pdf = QAction("Esporta PDF completo  (Ctrl+P)", self)
         a_pdf.triggered.connect(self.stampa_report)
         a_csv = QAction("Esporta storico CSV", self)
         a_csv.triggered.connect(self.esporta_csv)
@@ -113,11 +145,6 @@ class CalcolatoreFeriePAR(QMainWindow):
         file_menu.addAction(a_csv)
         file_menu.addSeparator()
 
-        a_reset = QAction("Reset Dati", self)
-        a_reset.triggered.connect(self.reset_dati)
-        file_menu.addAction(a_reset)
-
-        file_menu.addSeparator()
         a_esci = QAction("Esci", self)
         a_esci.triggered.connect(self.close)
         file_menu.addAction(a_esci)
@@ -175,6 +202,63 @@ class CalcolatoreFeriePAR(QMainWindow):
             self._popola_ui_da_dm()
             self.calcola()
             QMessageBox.information(self, "Reset", "Dati azzerati con successo.")
+
+    def _nome_database_default(self) -> str:
+        """Genera un nome file leggibile per il salvataggio del database."""
+        nome = (self.txt_nominativo.text().strip() or self.dm.nominativo or "dipendente").strip()
+        anno = str(date.today().year)
+        anni = {item["data"].year() for item in self._assenze_effettive_e_programmate()} if hasattr(self, "tab_storico") else set()
+        if len(anni) == 1:
+            anno = str(next(iter(anni)))
+        nome_pulito = "".join(ch if ch.isalnum() else "_" for ch in nome).strip("_") or "dipendente"
+        return f"FeriePAR_{nome_pulito}_{anno}.json"
+
+    def salva_database_come(self) -> None:
+        """Esporta tutto il database corrente in un file JSON scelto dall'utente."""
+        self.salva_dati_su_file()
+        nome_default = self._nome_database_default()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salva database", nome_default, "Database JSON (*.json);;Tutti i file (*)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        success, err = self.dm.salva_su_file(path)
+        if success:
+            QMessageBox.information(self, "Database salvato", f"Database salvato correttamente:\n{path}")
+        else:
+            QMessageBox.critical(self, "Errore salvataggio database", f"Impossibile salvare il database:\n{err}")
+
+    def carica_database_da_file(self) -> None:
+        """Carica un database JSON salvato e lo rende il database corrente."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Carica database", "", "Database JSON (*.json);;Tutti i file (*)"
+        )
+        if not path:
+            return
+
+        risposta = QMessageBox.question(
+            self,
+            "Carica database",
+            "Il database selezionato sostituirà tutti i dati attualmente caricati.\n\n"
+            "Prima di procedere, salva il database corrente se vuoi conservarlo.\n\n"
+            "Vuoi continuare?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if risposta != QMessageBox.StandardButton.Yes:
+            return
+
+        success, err = self.dm.carica_da_file(path)
+        if not success:
+            QMessageBox.critical(self, "Errore caricamento database", f"Impossibile caricare il database:\n{err}")
+            return
+
+        self._popola_ui_da_dm()
+        self.calcola()
+        self.salva_dati_su_file()
+        QMessageBox.information(self, "Database caricato", f"Database caricato correttamente:\n{path}")
 
     def crea_sezione_anagrafica(self) -> None:
         group = QGroupBox("1. Anagrafica Dipendente")
@@ -338,17 +422,11 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.tab_storico = QTableWidget()
         self.tab_storico.setColumnCount(3)
         self.tab_storico.setHorizontalHeaderLabels(["Data", "Tipo", "Ore inserite"])
-
-        # Allineamento dinamico delle colonne dello storico
-        self.tab_storico.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.tab_storico.horizontalHeader().setStretchLastSection(True)
-
+        self.tab_storico.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.tab_storico.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tab_storico.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tab_storico.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tab_storico.setAlternatingRowColors(True)
-        self.tab_storico.setToolTip("Doppio clic sulla colonna 'Tipo' per cambiare rapidamente da FERIE a PAR e viceversa.")
-        self.tab_storico.cellDoubleClicked.connect(self.on_storico_double_click)
 
         hbox_btn = QHBoxLayout()
         btn_rimuovi = QPushButton("Rimuovi Selezionati  (Del)")
@@ -383,19 +461,28 @@ class CalcolatoreFeriePAR(QMainWindow):
         vbox_saldi.addLayout(hbox_hdr)
 
         self.tab_saldi = QTableWidget()
-        self.tab_saldi.setColumnCount(8) # Aggiunta colonna Presunto a fine anno
+        self.tab_saldi.setObjectName("tab_saldi")
+        self.tab_saldi.setColumnCount(9)
         self.tab_saldi.setHorizontalHeaderLabels([
-            "Tipo", "Diritto annuo", "Residuo AP", "Maturato ad oggi", "Usato totale", "Residuo AP rimasto", "Disponibili oggi", "Presunto fine anno"
+            "Tipo", "Diritto\nannuo", "Residuo AP\niniziale", "AP usato\nanno prec.",
+            "Maturato\nad oggi", "Usato\ntotale", "Residuo AP\nrimasto",
+            "Disponibili\noggi", "Presunto\nfine anno"
         ])
-
-        # Allineamento dinamico delle colonne dello specchietto dei saldi
         self.tab_saldi.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.tab_saldi.horizontalHeader().setStretchLastSection(True)
-
+        self.tab_saldi.horizontalHeader().setMinimumSectionSize(78)
         self.tab_saldi.verticalHeader().setVisible(False)
+        self.tab_saldi.verticalHeader().setDefaultSectionSize(42)
+        self.tab_saldi.setMinimumHeight(150)
+        self.tab_saldi.setAlternatingRowColors(True)
+        self.tab_saldi.setShowGrid(False)
+        self.tab_saldi.setWordWrap(True)
+        self.tab_saldi.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tab_saldi.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tab_saldi.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tab_saldi.setRowCount(2)
-        self.tab_saldi.setItem(0, 0, QTableWidgetItem(config.TIPO_FERIE))
-        self.tab_saldi.setItem(1, 0, QTableWidgetItem(config.TIPO_PAR))
+        self._imposta_cella_saldi(0, 0, config.TIPO_FERIE, evidenza="tipo")
+        self._imposta_cella_saldi(1, 0, config.TIPO_PAR, evidenza="tipo")
         vbox_saldi.addWidget(self.tab_saldi)
         vbox_saldi.addSpacing(10)
 
@@ -494,6 +581,8 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         for item in self.dm.calendario.assenze_collettive_programmate():
             key = item["data"].toString(config.DATE_FORMAT_INTERNAL)
+            # Se la data esiste gia' nello storico non viene duplicata: la riga reale
+            # resta l'unica fonte di ore, ma viene comunque evidenziata come calendario.
             if key not in date_storico:
                 righe.append(item)
 
@@ -589,6 +678,8 @@ class CalcolatoreFeriePAR(QMainWindow):
                 i_tipo = self.tab_storico.item(row, 1)
                 if i_data and i_tipo:
                     if "(Calendario)" in i_tipo.text():
+                        # Le righe generate dal calendario non si cancellano dallo storico:
+                        # per rimuoverle bisogna modificare il testo del calendario collettivo.
                         continue
                     d = QDate.fromString(i_data.text(), config.DATE_FORMAT_DISPLAY)
                     t = i_tipo.text().replace(" (Cal)", "").replace(" (Calendario)", "")
@@ -601,38 +692,6 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.salva_dati_su_file()
             self.calcola()
 
-    def on_storico_double_click(self, row: int, col: int) -> None:
-        """
-        Gestisce il doppio clic sullo storico per commutare il tipo di assenza.
-        """
-        if col != 1:  # Modifica consentita solo sulla colonna "Tipo"
-            return
-
-        item_data = self.tab_storico.item(row, 0)
-        item_tipo = self.tab_storico.item(row, 1)
-        if not item_data or not item_tipo:
-            return
-
-        tipo_testo = item_tipo.text()
-
-        # Le date inserite da mail non possono essere modificate dalla UI di sistema, va modificata la mail
-        if "(Cal)" in tipo_testo or "(Calendario)" in tipo_testo:
-            QMessageBox.information(self, "Info", "Le date caricate dal Calendario Aziendale non possono essere modificate da qui.\nPer rimuoverle o cambiarle, modifica il blocco di testo del Calendario.")
-            return
-
-        d_str = item_data.text()
-        d_qdate = QDate.fromString(d_str, config.DATE_FORMAT_DISPLAY)
-
-        # Cerca l'occorrenza esatta nello storico e inverti
-        for a in self.dm.storico_assenze:
-            if a["data"] == d_qdate and a["tipo"] == tipo_testo:
-                a["tipo"] = config.TIPO_PAR if a["tipo"] == config.TIPO_FERIE else config.TIPO_FERIE
-                self.salva_dati_su_file()
-                self.calcola()
-                self._aggiorna_combo_anni()
-                self.aggiorna_tabella_storico()
-                break
-
     def calcola(self) -> None:
         qd = self.date_assunzione.date()
         d_ass = date(qd.year(), qd.month(), qd.day())
@@ -643,10 +702,26 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         god_f_cal, god_p_cal = 0.0, 0.0
         god_f_totale, god_p_totale = 0.0, 0.0
+        god_f_anno_precedente, god_p_anno_precedente = 0.0, 0.0
+        anno_precedente = today.year - 1
 
         for x in self._assenze_effettive_e_programmate():
-            if x.get("origine") == "Calendario" and x["data"].year() != today.year:
+            anno_assenza = x["data"].year()
+
+            # Le assenze dell'anno precedente scaricano il Residuo AP inserito/importato.
+            # Questo serve per i calendari che includono ferie/PAR di fine anno precedente
+            # non ancora assorbite nel valore di Residuo AP disponibile.
+            if anno_assenza == anno_precedente:
+                if x["tipo"] == config.TIPO_FERIE:
+                    god_f_anno_precedente += x["ore"]
+                elif x["tipo"] == config.TIPO_PAR:
+                    god_p_anno_precedente += x["ore"]
                 continue
+
+            # Il calcolo del maturato/usato dell'anno corrente resta limitato all'anno corrente.
+            if anno_assenza != today.year:
+                continue
+
             is_cal = self.dm.calendario.is_collettivo(x["data"]) or x.get("origine") == "Calendario"
             if x["tipo"] == config.TIPO_FERIE:
                 god_f_totale += x["ore"]
@@ -661,37 +736,77 @@ class CalcolatoreFeriePAR(QMainWindow):
         god_f_normale = max(0.0, god_f_totale - god_f_cal)
         god_p_normale = max(0.0, god_p_totale - god_p_cal)
 
-        self._ultimo_calc_ferie = self.calc.fifo_avanzato(sp_ferie, self.dm.res_ap_ferie, mat_f, god_f_normale,
-                                                          god_f_cal)
-        self._ultimo_calc_par = self.calc.fifo_avanzato(sp_par, self.dm.res_ap_par, mat_p, god_p_normale, god_p_cal)
+        res_ap_ferie_corretto = self.dm.res_ap_ferie - god_f_anno_precedente
+        res_ap_par_corretto = self.dm.res_ap_par - god_p_anno_precedente
+
+        self._ultimo_calc_ferie = self.calc.fifo_avanzato(
+            sp_ferie, res_ap_ferie_corretto, mat_f, god_f_normale, god_f_cal,
+            ap_scalato_anno_precedente=god_f_anno_precedente,
+            res_ap_iniziale=self.dm.res_ap_ferie
+        )
+        self._ultimo_calc_par = self.calc.fifo_avanzato(
+            sp_par, res_ap_par_corretto, mat_p, god_p_normale, god_p_cal,
+            ap_scalato_anno_precedente=god_p_anno_precedente,
+            res_ap_iniziale=self.dm.res_ap_par
+        )
 
         self._aggiorna_riga(0, self._ultimo_calc_ferie, self.bar_ferie, config.TIPO_FERIE)
         self._aggiorna_riga(1, self._ultimo_calc_par, self.bar_par, config.TIPO_PAR)
 
+    def _imposta_cella_saldi(self, row: int, col: int, testo: str,
+                            evidenza: str = "normale") -> QTableWidgetItem:
+        """Crea una cella dei saldi con allineamento, colori e tooltip coerenti."""
+        item = QTableWidgetItem(testo)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setToolTip(testo)
+
+        if evidenza == "tipo":
+            item.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+            item.setForeground(QColor("#1f2937"))
+            item.setBackground(QColor("#edf2f7"))
+        elif evidenza == "saldo_ok":
+            item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+            item.setForeground(QColor("#1f7a3a"))
+            item.setBackground(QColor("#e8f7ee"))
+        elif evidenza == "saldo_ko":
+            item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+            item.setForeground(QColor("#b42318"))
+            item.setBackground(QColor("#fdecec"))
+        elif evidenza == "presunto":
+            item.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+            item.setForeground(QColor("#344054"))
+            item.setBackground(QColor("#f5f7fa"))
+        elif evidenza == "attenzione":
+            item.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+            item.setForeground(QColor("#b54708"))
+            item.setBackground(QColor("#fff3cd"))
+
+        self.tab_saldi.setItem(row, col, item)
+        return item
+
     def _aggiorna_riga(self, row: int, r: Dict[str, float], bar: QProgressBar, tipo: str) -> None:
         """Aggiorna la riga dei saldi usando ore decimali leggibili per l'utente."""
-        self.tab_saldi.setItem(row, 1, QTableWidgetItem(utils.format_ore_decimali(r["diritto"])))
-        self.tab_saldi.setItem(row, 2, QTableWidgetItem(utils.format_ore_decimali(r["res_ap"])))
-        self.tab_saldi.setItem(row, 3, QTableWidgetItem(utils.format_ore_decimali(r["maturato"])))
-        self.tab_saldi.setItem(row, 4, QTableWidgetItem(utils.format_ore_decimali(r["goduto_tot"])))
+        self._imposta_cella_saldi(row, 1, utils.format_ore_decimali(r["diritto"]))
+        self._imposta_cella_saldi(row, 2, utils.format_ore_decimali(r.get("res_ap_iniziale", r["res_ap"])))
+        self._imposta_cella_saldi(row, 3, utils.format_ore_decimali(r.get("ap_scalato_anno_precedente", 0.0)),
+                                  evidenza="attenzione" if r.get("ap_scalato_anno_precedente", 0.0) > 0 else "normale")
+        self._imposta_cella_saldi(row, 4, utils.format_ore_decimali(r["maturato"]))
+        self._imposta_cella_saldi(row, 5, utils.format_ore_decimali(r["goduto_tot"]))
 
-        it_ap = QTableWidgetItem(utils.format_ore_decimali(r["res_ap_netto"]))
         if r["res_ap_netto"] == 0 and r["res_ap"] > 0:
-            it_ap.setForeground(QColor("orange"))
-        elif r["res_ap_netto"] > 0:
-            it_ap.setForeground(QColor("blue"))
-        self.tab_saldi.setItem(row, 5, it_ap)
+            evidenza_ap = "attenzione"
+        elif r["res_ap_netto"] < 0:
+            evidenza_ap = "saldo_ko"
+        else:
+            evidenza_ap = "normale"
+        self._imposta_cella_saldi(row, 6, utils.format_ore_decimali(r["res_ap_netto"]), evidenza=evidenza_ap)
 
-        it_s = QTableWidgetItem(utils.format_ore_decimali(r["saldo"]))
-        it_s.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        it_s.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        it_s.setForeground(QColor("#d9534f") if r["saldo"] < 0 else QColor("#5cb85c"))
-        self.tab_saldi.setItem(row, 6, it_s)
+        evidenza_saldo = "saldo_ko" if r["saldo"] < 0 else "saldo_ok"
+        self._imposta_cella_saldi(row, 7, utils.format_ore_decimali(r["saldo"]), evidenza=evidenza_saldo)
 
-        # Nuova colonna: Presunto fine anno
-        it_presunto = QTableWidgetItem(utils.format_ore_decimali(r["presunto_fine_anno"]))
-        it_presunto.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        self.tab_saldi.setItem(row, 7, it_presunto)
+        self._imposta_cella_saldi(row, 8, utils.format_ore_decimali(r.get("presunto_fine_anno", 0.0)),
+                                  evidenza="presunto")
+        self.tab_saldi.resizeColumnsToContents()
 
         totale = max(r["res_ap"] + r["diritto"], 1.0)
         saldo = max(r["saldo"], 0.0)
@@ -820,7 +935,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             QMessageBox.warning(self, "Dati mancanti", "Inserisci il nome del dipendente.")
             return
 
-        nome_default = f"Riepilogo_{self.mese_busta}_{self.anno_busta}.pdf"
+        nome_default = f"Riepilogo_completo_{self.mese_busta}_{self.anno_busta}.pdf"
         file_path, _ = QFileDialog.getSaveFileName(self, "Salva Report PDF", nome_default, "PDF Files (*.pdf)")
         if not file_path:
             return
@@ -831,13 +946,41 @@ class CalcolatoreFeriePAR(QMainWindow):
         def tr(label: str, r: Dict[str, float]) -> str:
             return (f"<tr><td><b>{label}</b></td>"
                     f"<td>{utils.format_ore_decimali(r.get('diritto', 0))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('res_ap', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('res_ap_iniziale', r.get('res_ap', 0)))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('ap_scalato_anno_precedente', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('maturato', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('goduto_tot', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('res_ap_netto', 0))}</td>"
                     f"<td class='s'>{utils.format_ore_decimali(r.get('saldo', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('presunto_fine_anno', 0))}</td></tr>")
 
-        html = f"""<html><head><style>
+        storico_rows = []
+        for item in self._assenze_effettive_e_programmate():
+            origine = item.get("origine", "Storico")
+            is_cal = self.dm.calendario.is_collettivo(item["data"])
+            if origine == "Calendario":
+                tipo_display = f"{item['tipo']} (Calendario)"
+            elif is_cal:
+                tipo_display = f"{item['tipo']} (Cal)"
+            else:
+                tipo_display = item["tipo"]
+
+            storico_rows.append(
+                "<tr>"
+                f"<td>{html.escape(item['data'].toString(config.DATE_FORMAT_DISPLAY))}</td>"
+                f"<td>{html.escape(tipo_display)}</td>"
+                f"<td>{html.escape(utils.format_ore_decimali(float(item['ore'])))}</td>"
+                f"<td>{html.escape(origine)}</td>"
+                "</tr>"
+            )
+        if not storico_rows:
+            storico_rows.append('<tr><td colspan="4">Nessuna assenza registrata.</td></tr>')
+        storico_html = "\n".join(storico_rows)
+
+        dipendente = html.escape(self.txt_nominativo.text())
+        matricola = html.escape(self.txt_matricola.text())
+
+        html_doc = f"""<html><head><style>
             body{{font-family:Arial,sans-serif;font-size:11pt;}}
             h1{{color:#0078d7;font-size:18pt;}}
             h3{{font-size:13pt;margin-top:15pt;margin-bottom:5pt;}}
@@ -846,29 +989,38 @@ class CalcolatoreFeriePAR(QMainWindow):
             th,td{{border:1px solid #ccc;padding:6pt;text-align:center;font-size:10pt;}}
             th{{background-color:#f2f2f2;}}
             .s{{font-weight:bold;}}
+            .small{{font-size:9pt;color:#555;}}
         </style></head><body>
             <h1>Report Ferie e PAR</h1>
             <p><b>Data Report:</b> {date.today().strftime("%d/%m/%Y")}</p><hr>
             <h3>Anagrafica</h3>
-            <p><b>Dipendente:</b> {self.txt_nominativo.text()}</p>
-            <p><b>Matricola:</b> {self.txt_matricola.text()}</p>
-            <p><b>Data Assunzione:</b> {self.date_assunzione.text()}</p>
-            <br><h3>Dettaglio saldi:</h3><p><b>Nota:</b> valori espressi in ore decimali. 3,5 h = 3 ore e mezza.</p>
-            <p><b>Calendario:</b> le date collettive programmate sono gia' scalate dai saldi come giornate intere da 8h, se non gia' presenti nello storico.</p><br>
+            <p><b>Dipendente:</b> {dipendente}</p>
+            <p><b>Matricola:</b> {matricola}</p>
+            <p><b>Data Assunzione:</b> {html.escape(self.date_assunzione.text())}</p>
+            <br><h3>Dettaglio saldi</h3>
+            <p><b>Nota:</b> valori espressi in ore decimali. 3,5 h = 3 ore e mezza.</p>
+            <p><b>Calendario:</b> le date collettive programmate sono gia' scalate dai saldi come giornate intere da 8h, se non gia' presenti nello storico.</p>
             <table>
-                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP</th>
-                    <th>Maturato ad oggi</th><th>Usato totale</th><th>Disponibili oggi</th><th>Presunto fine anno</th></tr>
+                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP iniziale</th><th>AP usato anno prec.</th>
+                    <th>Maturato ad oggi</th><th>Usato totale</th><th>Residuo AP rimasto</th><th>Disponibili oggi</th><th>Presunto fine anno</th></tr>
                 {tr("FERIE", r_f)}
                 {tr("PAR", r_p)}
-            </table><br><br>
-            <p style="font-size:9pt;color:#555;">Generato da Gestione Ferie/PAR v{config.APP_VERSION}</p>
+            </table>
+
+            <br><h3>Storico utilizzi completo</h3>
+            <table>
+                <tr><th>Data</th><th>Tipo</th><th>Ore</th><th>Origine</th></tr>
+                {storico_html}
+            </table>
+
+            <br><p class="small">Generato da Gestione Ferie/PAR v{config.APP_VERSION}</p>
         </body></html>"""
 
         printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(file_path)
         doc = QTextDocument()
-        doc.setHtml(html)
+        doc.setHtml(html_doc)
         doc.print(printer)
         QMessageBox.information(self, "Esportazione PDF", f"PDF salvato:\n{file_path}")
 

@@ -58,14 +58,19 @@ def decimal_to_hhmm(val: float) -> float:
     m = round((abs_val - h) * 60)
     return sign * (h + m / 100.0)
 
+
 def format_ore_decimali(val: float, decimali: int = 2) -> str:
     """
-    Formatta un valore in ore decimali per la visualizzazione finale.
+    Formattta un valore in ore decimali per la visualizzazione finale.
 
     Esempi:
         3.5  -> "3,5 h"
         7.25 -> "7,25 h"
         8.0  -> "8 h"
+
+    Nota:
+        Questa funzione non converte il valore in formato HH,MM.
+        Mostra ore decimali reali: 3,5 h significa 3 ore e mezza.
     """
     valore = round(val, decimali)
     s = f"{valore:.{decimali}f}".replace('.', ',')
@@ -73,6 +78,7 @@ def format_ore_decimali(val: float, decimali: int = 2) -> str:
     if s == '-0':
         s = '0'
     return f"{s} h"
+
 
 def parse_ore_zucchetti(s: str) -> float:
     """
