@@ -7,11 +7,12 @@ from setuptools import setup, find_packages
 import os
 
 # Leggi la versione da version.txt
-with open("version.txt", "r") as f:
+VERSION_FILE = os.path.join(os.path.dirname(__file__), "version.txt")
+with open(VERSION_FILE, "r") as f:
     VERSION = f.read().strip()
 
 # Leggi il contenuto di README.md
-with open("README.md", "r", encoding="utf-8") as f:
+with open(os.path.join(os.path.dirname(__file__), "README.md"), "r", encoding="utf-8") as f:
     LONG_DESCRIPTION = f.read()
 
 setup(
