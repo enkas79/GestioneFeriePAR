@@ -11,8 +11,10 @@ import re
 import shutil
 import urllib.request
 import urllib.error
+import base64
+import hashlib
 from datetime import date
-from typing import Dict, List, Set, Tuple, Any
+from typing import Dict, List, Set, Tuple, Any, Optional
 from PyQt6.QtCore import QDate
 
 import config
@@ -20,10 +22,62 @@ import utils
 
 try:
     from pypdf import PdfReader
-
     HAS_PYPDF = True
 except ImportError:
     HAS_PYPDF = False
+
+# --- CRITTOGRAFIA ---
+try:
+    from cryptography.fernet import Fernet
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
+    config.logger.warning("Libreria 'cryptography' non installata. I dati verranno salvati in chiaro.")
+
+
+class EncryptionManager:
+    """Gestisce la crittografia e decrittografia dei dati usando AES-256 (Fernet)."""
+    
+    def __init__(self, password: str = ""):
+        """
+        Inizializza il gestore di crittografia.
+        
+        Args:
+            password (str): Password utente per derivare la chiave. Se vuota, usa una chiave predefinita.
+        """
+        self.password = password
+        self.key = self._derive_key(password) if password else None
+        self.cipher_suite = Fernet(self.key) if self.key else None
+    
+    def _derive_key(self, password: str) -> bytes:
+        """Deriva una chiave Fernet (32-byte URL-safe base64) dalla password."""
+        # Usa SHA-256 per derivare una chiave di 32 byte
+        digest = hashlib.sha256(password.encode()).digest()
+        # Fernet richiede una chiave URL-safe base64-encoded di 32 byte
+        return base64.urlsafe_b64encode(digest)
+    
+    def encrypt(self, data: str) -> bytes:
+        """Cifra una stringa JSON."""
+        if not self.cipher_suite:
+            raise ValueError("Nessuna chiave di crittografia disponibile.")
+        return self.cipher_suite.encrypt(data.encode('utf-8'))
+    
+    def decrypt(self, encrypted_data: bytes) -> str:
+        """Decifra dati cifrati."""
+        if not self.cipher_suite:
+            raise ValueError("Nessuna chiave di crittografia disponibile.")
+        return self.cipher_suite.decrypt(encrypted_data).decode('utf-8')
+    
+    @staticmethod
+    def is_encrypted(file_path: str) -> bool:
+        """Verifica se un file è cifrato (contiene dati binari)."""
+        try:
+            with open(file_path, 'rb') as f:
+                first_bytes = f.read(4)
+                # I file JSON iniziano con '{' o '['
+                return not (first_bytes.startswith(b'{') or first_bytes.startswith(b'['))
+        except Exception:
+            return False
 
 
 class UpdateManager:
@@ -38,6 +92,7 @@ class UpdateManager:
             Tuple[bool, str, str]: (Aggiornamento disponibile, Nuova versione, URL della release)
         """
         try:
+            config.logger.info(f"Controllo aggiornamenti da {config.GITHUB_API_URL}")
             # Creiamo la richiesta aggiungendo uno User-Agent (richiesto dalle API GitHub)
             req = urllib.request.Request(config.GITHUB_API_URL, headers={'User-Agent': 'GestioneFeriePAR'})
 
@@ -47,6 +102,7 @@ class UpdateManager:
                     latest_version = data.get("tag_name", "").strip()
 
                     if not latest_version:
+                        config.logger.warning("Nessun tag di versione trovato nella risposta GitHub.")
                         return False, config.APP_VERSION, ""
 
                     # Funzione interna per estrarre solo i numeri dalla stringa (es. "v1.0.2" -> (1, 0, 2))
@@ -60,11 +116,15 @@ class UpdateManager:
                     # Se la versione su GitHub è maggiore di quella locale
                     if v_latest > v_current:
                         html_url = data.get("html_url", config.GITHUB_RELEASES_URL)
+                        config.logger.info(f"Aggiornamento disponibile: {latest_version}")
                         return True, latest_version, html_url
+                    else:
+                        config.logger.info("Nessun aggiornamento disponibile.")
 
+        except urllib.error.URLError as e:
+            config.logger.warning(f"Errore di rete durante il controllo aggiornamenti: {e}")
         except Exception as e:
-            # Silenziamo l'errore per non far crashare l'app in assenza di rete o limiti API
-            print(f"Errore controllo aggiornamenti: {e}")
+            config.logger.error(f"Errore controllo aggiornamenti: {e}", exc_info=True)
 
         return False, config.APP_VERSION, ""
 
@@ -209,9 +269,15 @@ class CalendarManager:
 
 
 class DataManager:
-    """Gestisce la persistenza dei dati utente su file JSON locale."""
+    """Gestisce la persistenza dei dati utente su file JSON locale (con crittografia opzionale)."""
 
-    def __init__(self) -> None:
+    def __init__(self, password: str = "") -> None:
+        """
+        Inizializza il DataManager.
+        
+        Args:
+            password (str): Password per la crittografia. Se vuota, i dati verranno salvati in chiaro.
+        """
         self.calendario = CalendarManager()
         self.nominativo: str = ""
         self.matricola: str = ""
@@ -220,6 +286,8 @@ class DataManager:
         self.res_ap_par: float = 0.0
         self.includi_patrono: bool = True
         self.storico_assenze: List[Dict[str, Any]] = []
+        self.password = password
+        self.encryption_manager = EncryptionManager(password) if HAS_CRYPTOGRAPHY and password else None
         self.reset()
 
     def reset(self) -> None:
@@ -278,28 +346,65 @@ class DataManager:
         self.storico_assenze.sort(key=lambda x: x["data"])
 
     def _leggi_payload_da_file(self, path: str) -> Dict[str, Any]:
-        """Legge e restituisce un payload JSON da file."""
-        with open(path, 'r', encoding='utf-8') as f:
-            raw = json.load(f)
-        if not isinstance(raw, dict):
-            raise ValueError("Il file non contiene un database valido.")
-        return raw
+        """Legge e restituisce un payload JSON da file (con decrittografia se necessario)."""
+        try:
+            # Verifica se il file è cifrato
+            if HAS_CRYPTOGRAPHY and self.encryption_manager and EncryptionManager.is_encrypted(path):
+                with open(path, 'rb') as f:
+                    encrypted_data = f.read()
+                decrypted_data = self.encryption_manager.decrypt(encrypted_data)
+                raw = json.loads(decrypted_data)
+            else:
+                # Prova a leggere come JSON in chiaro
+                with open(path, 'r', encoding='utf-8') as f:
+                    raw = json.load(f)
+            
+            if not isinstance(raw, dict):
+                raise ValueError("Il file non contiene un database valido.")
+            return raw
+        except json.JSONDecodeError as e:
+            config.logger.error(f"Errore decodifica JSON in {path}: {e}")
+            raise ValueError(f"File corrotto o non valido: {e}")
+        except Exception as e:
+            config.logger.error(f"Errore lettura file {path}: {e}")
+            raise ValueError(f"Impossibile leggere il file: {e}")
 
     def _salva_payload_su_file(self, path: str, payload: Dict[str, Any], crea_backup: bool = False) -> None:
-        """Scrive un payload JSON su file, opzionalmente creando un backup preventivo."""
-        if crea_backup and os.path.exists(path):
-            shutil.copy2(path, config.FILE_BACKUP)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=4, ensure_ascii=False)
+        """Scrive un payload JSON su file (con crittografia se disponibile), opzionalmente creando un backup preventivo."""
+        try:
+            if crea_backup and os.path.exists(path):
+                shutil.copy2(path, config.FILE_BACKUP)
+            
+            # Salva con crittografia se disponibile e password impostata
+            if HAS_CRYPTOGRAPHY and self.encryption_manager and self.password:
+                json_data = json.dumps(payload, indent=4, ensure_ascii=False)
+                encrypted_data = self.encryption_manager.encrypt(json_data)
+                with open(path, 'wb') as f:
+                    f.write(encrypted_data)
+                config.logger.info(f"Dati salvati con crittografia in {path}")
+            else:
+                # Salva in chiaro (fallback)
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, indent=4, ensure_ascii=False)
+                if not HAS_CRYPTOGRAPHY:
+                    config.logger.warning(f"Dati salvati in chiaro in {path} (cryptography non installato)")
+                elif not self.password:
+                    config.logger.warning(f"Dati salvati in chiaro in {path} (nessuna password fornita)")
+        except Exception as e:
+            config.logger.error(f"Errore salvataggio file {path}: {e}")
+            raise OSError(f"Impossibile salvare il file: {e}")
 
     def carica(self) -> bool:
         """Carica i dati utente dal file di salvataggio predefinito."""
         if not os.path.exists(config.FILE_DATI):
+            config.logger.info("Nessun file di dati esistente. Verrà creato un nuovo database.")
             return False
         try:
             self._applica_payload(self._leggi_payload_da_file(config.FILE_DATI))
+            config.logger.info(f"Dati caricati correttamente da {config.FILE_DATI}")
             return True
-        except (OSError, json.JSONDecodeError, ValueError, KeyError):
+        except (OSError, json.JSONDecodeError, ValueError, KeyError) as e:
+            config.logger.error(f"Errore caricamento dati da {config.FILE_DATI}: {e}")
             return False
 
     def carica_da_file(self, path: str) -> Tuple[bool, str]:
@@ -319,8 +424,10 @@ class DataManager:
 
         try:
             self._salva_payload_su_file(config.FILE_DATI, self._crea_payload(), crea_backup=True)
+            config.logger.info(f"Dati salvati correttamente in {config.FILE_DATI}")
             return True, ""
         except OSError as e:
+            config.logger.error(f"Errore salvataggio dati: {e}")
             return False, str(e)
 
     def salva_su_file(self, path: str) -> Tuple[bool, str]:
@@ -370,14 +477,23 @@ class BustaPageParser:
 
     def leggi_testo(self, file_path: str) -> str:
         """Legge ed estrae tutto il testo da un file PDF o TXT."""
-        if file_path.lower().endswith(".pdf"):
-            if not HAS_PYPDF:
-                raise ImportError("Libreria pypdf non installata.")
-            reader = PdfReader(file_path)
-            return "\n".join(p.extract_text() or "" for p in reader.pages)
-
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
+        try:
+            if file_path.lower().endswith(".pdf"):
+                if not HAS_PYPDF:
+                    config.logger.error("Libreria pypdf non installata. Impossibile leggere PDF.")
+                    raise ImportError("Libreria pypdf non installata.")
+                reader = PdfReader(file_path)
+                testo = "\n".join(p.extract_text() or "" for p in reader.pages)
+                config.logger.info(f"Testo estratto da PDF: {file_path}")
+                return testo
+            else:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    testo = f.read()
+                config.logger.info(f"Testo letto da file TXT: {file_path}")
+                return testo
+        except Exception as e:
+            config.logger.error(f"Errore lettura file {file_path}: {e}")
+            raise ValueError(f"Impossibile leggere il file {file_path}: {e}")
 
     def parse(self, text: str) -> Dict[str, Any]:
         """

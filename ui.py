@@ -5,6 +5,7 @@ Costruisce la finestra grafica utilizzando le classi di PyQt6.
 
 import os
 import html
+import logging
 from datetime import date
 from typing import Any, Dict, List, Tuple
 
@@ -21,7 +22,10 @@ from PyQt6.QtPrintSupport import QPrinter
 
 import config
 import utils
-from models import DataManager, BustaPageParser, CalcolatoreLogica, HAS_PYPDF, UpdateManager
+from models import DataManager, BustaPageParser, CalcolatoreLogica, HAS_PYPDF, UpdateManager, HAS_CRYPTOGRAPHY
+
+# Configura logging per la UI
+ui_logger = logging.getLogger("ui")
 
 
 class CalcolatoreFeriePAR(QMainWindow):
@@ -35,6 +39,8 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         self.resize(1100, 750)
 
+        # Inizializza DataManager senza password (per retrocompatibilità)
+        # La password può essere impostata tramite un dialog all'avvio
         self.dm = DataManager()
         self.parser = BustaPageParser()
         self.calc = CalcolatoreLogica()
@@ -61,9 +67,54 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         self._registra_shortcuts()
 
-        self.dm.carica()
+        # Carica i dati e verifica se è necessario chiedere una password
+        if not self.dm.carica():
+            ui_logger.info("Nessun file di dati esistente. Verrà creato un nuovo database.")
+        else:
+            # Se il file è cifrato, chiede la password
+            if HAS_CRYPTOGRAPHY and self._is_file_encrypted(config.FILE_DATI):
+                self._richiesti_password_all_avvio()
+        
         self._popola_ui_da_dm()
         self.calcola()
+
+    def _is_file_encrypted(self, file_path: str) -> bool:
+        """Verifica se un file è cifrato."""
+        try:
+            from models import EncryptionManager
+            return EncryptionManager.is_encrypted(file_path)
+        except Exception:
+            return False
+
+    def _richiesti_password_all_avvio(self) -> None:
+        """Chiede la password all'utente se il file è cifrato."""
+        password, ok = QInputDialog.getText(
+            self, "Password Richiesta",
+            "Il file di dati è cifrato. Inserisci la password per decifrarlo:",
+            QLineEdit.EchoMode.Password
+        )
+        if ok and password:
+            # Re-inizializza DataManager con la password
+            self.dm = DataManager(password)
+            try:
+                if self.dm.carica():
+                    ui_logger.info("Dati decifrati e caricati correttamente.")
+                    self._popola_ui_da_dm()
+                    self.calcola()
+                else:
+                    QMessageBox.critical(
+                        self, "Errore",
+                        "Password errata o file corrotto. I dati non possono essere caricati."
+                    )
+                    # Re-inizializza senza password per permettere il salvataggio in chiaro
+                    self.dm = DataManager()
+            except Exception as e:
+                ui_logger.error(f"Errore decifratura dati: {e}")
+                QMessageBox.critical(
+                    self, "Errore",
+                    f"Impossibile decifrare i dati: {e}"
+                )
+                self.dm = DataManager()
 
     def _applica_stile(self) -> None:
         self.setStyleSheet("""
@@ -630,15 +681,39 @@ class CalcolatoreFeriePAR(QMainWindow):
         return (ore_p + ore_nuove <= config.MAX_ORE_GIORNALIERE + 0.001), ore_p
 
     def aggiungi_assenza(self) -> None:
+        """Aggiunge una nuova assenza dopo aver validato i dati."""
+        # Validazione nominativo
+        if not self.txt_nominativo.text().strip():
+            QMessageBox.warning(self, "Errore", "Inserisci il nominativo del dipendente.")
+            ui_logger.warning("Tentativo di aggiungere assenza senza nominativo.")
+            return
+
         tipo = self.combo_tipo.currentText()
         ore_input = self.spin_ore.value()
         ore = utils.hhmm_to_decimal(ore_input)
 
+        # Validazione ore
+        if ore <= 0:
+            QMessageBox.warning(self, "Errore", "Le ore devono essere maggiori di 0.")
+            ui_logger.warning(f"Tentativo di aggiungere assenza con ore non valide: {ore}")
+            return
+
         if self.check_periodo.isChecked():
             start, end = self.date_inizio.date(), self.date_fine.date()
+            
+            # Validazione date
             if start > end:
-                QMessageBox.warning(self, "Errore", "La data di fine deve essere successiva.")
+                QMessageBox.warning(self, "Errore", "La data di fine deve essere successiva alla data di inizio.")
+                ui_logger.warning("Data di fine precedente alla data di inizio.")
                 return
+            
+            # Validazione date future
+            today = QDate.currentDate()
+            if start > today:
+                QMessageBox.warning(self, "Errore", "Non puoi inserire assenze con data di inizio futura.")
+                ui_logger.warning(f"Tentativo di inserire assenza con data futura: {start.toString(config.DATE_FORMAT_DISPLAY)}")
+                return
+
             curr, inseriti = start, 0
             while curr <= end:
                 if not utils.is_giorno_festivo(curr):
@@ -646,15 +721,26 @@ class CalcolatoreFeriePAR(QMainWindow):
                     if ok:
                         self.dm.storico_assenze.append({"data": curr, "tipo": tipo, "ore": ore})
                         inseriti += 1
+                        ui_logger.info(f"Aggiunta assenza: {curr.toString(config.DATE_FORMAT_DISPLAY)}, {tipo}, {ore}h")
                 curr = curr.addDays(1)
             QMessageBox.information(self, "Info", f"Inseriti {inseriti} giorni lavorativi.")
         else:
             data = self.date_inizio.date()
+            
+            # Validazione data futura
+            today = QDate.currentDate()
+            if data > today:
+                QMessageBox.warning(self, "Errore", f"Non puoi inserire assenze con data futura: {data.toString(config.DATE_FORMAT_DISPLAY)}.")
+                ui_logger.warning(f"Tentativo di inserire assenza con data futura: {data.toString(config.DATE_FORMAT_DISPLAY)}")
+                return
+
             ok, _ = self._verifica_limite_ore(data, ore)
             if not ok:
                 QMessageBox.critical(self, "Errore", f"Superamento limite giornaliero ({config.MAX_ORE_GIORNALIERE}h).")
+                ui_logger.warning(f"Superamento limite ore per data {data.toString(config.DATE_FORMAT_DISPLAY)}")
                 return
             self.dm.storico_assenze.append({"data": data, "tipo": tipo, "ore": ore})
+            ui_logger.info(f"Aggiunta assenza: {data.toString(config.DATE_FORMAT_DISPLAY)}, {tipo}, {ore}h")
 
         self.dm.storico_assenze.sort(key=lambda x: x["data"])
         self._aggiorna_combo_anni()
@@ -834,7 +920,9 @@ class CalcolatoreFeriePAR(QMainWindow):
                 self.lbl_avviso.setText("")
 
     def importa_busta_paga(self) -> None:
+        """Importa buste paga con gestione errori e logging."""
         if not HAS_PYPDF:
+            ui_logger.error("Tentativo di importare PDF senza pypdf installato.")
             QMessageBox.critical(self, "Errore", "Libreria 'pypdf' mancante.\nInstalla con: pip install pypdf")
             return
 
@@ -844,16 +932,20 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         ass_agg_totali = 0
         file_processati = 0
+        errori = []
 
         for file_path in file_paths:
             try:
+                ui_logger.info(f"Elaborazione file: {file_path}")
                 testo = self.parser.leggi_testo(file_path)
                 dati = self.parser.parse(testo)
 
                 if dati.get("ferie"):
                     self.dm.res_ap_ferie = dati["ferie"]["res_ap"]
+                    ui_logger.info(f"Residuo AP Ferie aggiornato: {self.dm.res_ap_ferie}")
                 if dati.get("par"):
                     self.dm.res_ap_par = dati["par"]["res_ap"]
+                    ui_logger.info(f"Residuo AP PAR aggiornato: {self.dm.res_ap_par}")
 
                 if dati.get("mese") and dati.get("anno"):
                     self.mese_busta = dati["mese_str"]
@@ -863,10 +955,12 @@ class CalcolatoreFeriePAR(QMainWindow):
                         if not dup:
                             self.dm.storico_assenze.append(g)
                             ass_agg_totali += 1
+                            ui_logger.info(f"Aggiunta assenza da busta: {g['data'].toString(config.DATE_FORMAT_DISPLAY)}, {g['tipo']}, {g['ore']}h")
 
                 file_processati += 1
             except Exception as e:
-                QMessageBox.critical(self, "Errore File", f"Errore su {os.path.basename(file_path)}: {e}")
+                ui_logger.error(f"Errore elaborazione file {file_path}: {e}")
+                errori.append(os.path.basename(file_path))
 
         if file_processati > 0:
             self.dm.storico_assenze.sort(key=lambda x: x["data"])
@@ -874,8 +968,13 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.aggiorna_tabella_storico()
             self.salva_dati_su_file()
             self.calcola()
-            QMessageBox.information(self, "Importazione",
-                                    f"Elaborati {file_processati} file. {ass_agg_totali} nuove assenze.")
+            
+            msg = f"Elaborati {file_processati} file. {ass_agg_totali} nuove assenze."
+            if errori:
+                msg += f"\n\nErrore su: {', '.join(errori)}"
+            QMessageBox.information(self, "Importazione", msg)
+        elif errori:
+            QMessageBox.critical(self, "Errore", f"Nessun file elaborato correttamente.\nErrori su: {', '.join(errori)}")
 
     def modifica_manuale_residui(self) -> None:
         val_f, ok1 = QInputDialog.getDouble(
@@ -913,14 +1012,26 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.calcola()
 
     def salva_dati_su_file(self) -> None:
+        """Salva i dati su file con validazione e logging."""
+        nominativo = self.txt_nominativo.text().strip()
+        
+        # Validazione nominativo
+        if not nominativo:
+            QMessageBox.warning(self, "Errore", "Inserisci il nominativo del dipendente.")
+            ui_logger.warning("Tentativo di salvataggio senza nominativo.")
+            return
+        
         success, err = self.dm.salva(
-            nominativo=self.txt_nominativo.text(),
+            nominativo=nominativo,
             matricola=self.txt_matricola.text(),
             data_assunzione_str=self.date_assunzione.date().toString(config.DATE_FORMAT_INTERNAL),
             includi_patrono=self.check_patrono.isChecked()
         )
         if not success:
+            ui_logger.error(f"Errore salvataggio dati: {err}")
             QMessageBox.critical(self, "Errore salvataggio", f"Impossibile salvare:\n{err}")
+        else:
+            ui_logger.info("Dati salvati correttamente.")
 
     def esporta_csv(self) -> None:
         nome = f"Storico_{self.dm.nominativo or 'dipendente'}.csv".replace(" ", "_")
