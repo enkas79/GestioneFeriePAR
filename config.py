@@ -8,7 +8,7 @@ import pathlib
 import logging
 
 # --- INFO VERSIONE E AGGIORNAMENTI ---
-APP_VERSION = "2.1.4"
+APP_VERSION = "2.2.0"
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "enkas79")

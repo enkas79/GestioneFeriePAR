@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QComboBox, QMessageBox,
                              QAbstractItemView, QLineEdit, QFileDialog, QInputDialog,
                              QGridLayout, QDialog, QTextBrowser,
-                             QDialogButtonBox, QProgressBar, QTextEdit)
+                             QDialogButtonBox, QProgressBar, QTextEdit, QProgressDialog)
 from PyQt6.QtCore import Qt, QDate, QUrl
 from PyQt6.QtGui import QFont, QColor, QAction, QTextDocument, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtPrintSupport import QPrinter
@@ -66,6 +66,9 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.crea_sezione_comandi()
 
         self._registra_shortcuts()
+        
+        # Disabilita pulsanti se dipendenze mancano
+        self._gestisci_dipendenze_mancanti()
 
         # Carica i dati e verifica se è necessario chiedere una password
         if not self.dm.carica():
@@ -85,6 +88,22 @@ class CalcolatoreFeriePAR(QMainWindow):
             return EncryptionManager.is_encrypted(file_path)
         except Exception:
             return False
+
+    def _gestisci_dipendenze_mancanti(self) -> None:
+        """Disabilita i pulsanti che dipendono da librerie non installate."""
+        # Trova il pulsante "Carica Buste Paga" nella sezione anagrafica
+        for child in self.findChildren(QPushButton):
+            if child.text() == "Carica Buste Paga":
+                child.setEnabled(HAS_PYPDF)
+                if not HAS_PYPDF:
+                    child.setToolTip("Installa pypdf per importare PDF: pip install pypdf")
+                break
+        
+        # Logga lo stato delle dipendenze
+        if not HAS_PYPDF:
+            ui_logger.warning("pypdf non installato. Il pulsante 'Carica Buste Paga' è disabilitato.")
+        if not HAS_CRYPTOGRAPHY:
+            ui_logger.warning("cryptography non installato. La crittografia è disabilitata.")
 
     def _richiesti_password_all_avvio(self) -> None:
         """Chiede la password all'utente se il file è cifrato."""
@@ -622,23 +641,8 @@ class CalcolatoreFeriePAR(QMainWindow):
 
     def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
         """Unisce storico reale e calendario collettivo, evitando doppi conteggi."""
-        righe: List[Dict[str, Any]] = [
-            {**item, "origine": "Storico"} for item in self.dm.storico_assenze
-        ]
-        date_storico = {
-            item["data"].toString(config.DATE_FORMAT_INTERNAL)
-            for item in self.dm.storico_assenze
-        }
-
-        for item in self.dm.calendario.assenze_collettive_programmate():
-            key = item["data"].toString(config.DATE_FORMAT_INTERNAL)
-            # Se la data esiste gia' nello storico non viene duplicata: la riga reale
-            # resta l'unica fonte di ore, ma viene comunque evidenziata come calendario.
-            if key not in date_storico:
-                righe.append(item)
-
-        righe.sort(key=lambda x: (x["data"], x["tipo"], x.get("origine", "")))
-        return righe
+        # Usa il metodo di DataManager per centralizzare la logica
+        return self.dm._assenze_effettive_e_programmate()
 
     def aggiorna_tabella_storico(self) -> None:
         filtro = self.combo_filtro_anno.currentText()
@@ -779,65 +783,26 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.calcola()
 
     def calcola(self) -> None:
+        """Calcola i saldi usando la logica separata in DataManager."""
         qd = self.date_assunzione.date()
         d_ass = date(qd.year(), qd.month(), qd.day())
         today = date.today()
-
-        sp_ferie, sp_par = self.calc.calcola_spettanze(d_ass, self.check_patrono.isChecked())
-        mesi = self.calc.calcola_mesi_maturati(d_ass, today)
-
-        god_f_cal, god_p_cal = 0.0, 0.0
-        god_f_totale, god_p_totale = 0.0, 0.0
-        god_f_anno_precedente, god_p_anno_precedente = 0.0, 0.0
-        anno_precedente = today.year - 1
-
-        for x in self._assenze_effettive_e_programmate():
-            anno_assenza = x["data"].year()
-
-            # Le assenze dell'anno precedente scaricano il Residuo AP inserito/importato.
-            # Questo serve per i calendari che includono ferie/PAR di fine anno precedente
-            # non ancora assorbite nel valore di Residuo AP disponibile.
-            if anno_assenza == anno_precedente:
-                if x["tipo"] == config.TIPO_FERIE:
-                    god_f_anno_precedente += x["ore"]
-                elif x["tipo"] == config.TIPO_PAR:
-                    god_p_anno_precedente += x["ore"]
-                continue
-
-            # Il calcolo del maturato/usato dell'anno corrente resta limitato all'anno corrente.
-            if anno_assenza != today.year:
-                continue
-
-            is_cal = self.dm.calendario.is_collettivo(x["data"]) or x.get("origine") == "Calendario"
-            if x["tipo"] == config.TIPO_FERIE:
-                god_f_totale += x["ore"]
-                if is_cal: god_f_cal += x["ore"]
-            elif x["tipo"] == config.TIPO_PAR:
-                god_p_totale += x["ore"]
-                if is_cal: god_p_cal += x["ore"]
-
-        mat_f = (sp_ferie / 12.0) * mesi
-        mat_p = (sp_par / 12.0) * mesi
-
-        god_f_normale = max(0.0, god_f_totale - god_f_cal)
-        god_p_normale = max(0.0, god_p_totale - god_p_cal)
-
-        res_ap_ferie_corretto = self.dm.res_ap_ferie - god_f_anno_precedente
-        res_ap_par_corretto = self.dm.res_ap_par - god_p_anno_precedente
-
-        self._ultimo_calc_ferie = self.calc.fifo_avanzato(
-            sp_ferie, res_ap_ferie_corretto, mat_f, god_f_normale, god_f_cal,
-            ap_scalato_anno_precedente=god_f_anno_precedente,
-            res_ap_iniziale=self.dm.res_ap_ferie
-        )
-        self._ultimo_calc_par = self.calc.fifo_avanzato(
-            sp_par, res_ap_par_corretto, mat_p, god_p_normale, god_p_cal,
-            ap_scalato_anno_precedente=god_p_anno_precedente,
-            res_ap_iniziale=self.dm.res_ap_par
-        )
-
-        self._aggiorna_riga(0, self._ultimo_calc_ferie, self.bar_ferie, config.TIPO_FERIE)
-        self._aggiorna_riga(1, self._ultimo_calc_par, self.bar_par, config.TIPO_PAR)
+        includi_patrono = self.check_patrono.isChecked()
+        
+        ui_logger.info("Avvio calcolo saldi...")
+        
+        try:
+            risultati = self.dm.calcola_saldi(d_ass, includi_patrono, oggi=today)
+            self._ultimo_calc_ferie = risultati["ferie"]
+            self._ultimo_calc_par = risultati["par"]
+            
+            self._aggiorna_riga(0, self._ultimo_calc_ferie, self.bar_ferie, config.TIPO_FERIE)
+            self._aggiorna_riga(1, self._ultimo_calc_par, self.bar_par, config.TIPO_PAR)
+            
+            ui_logger.info("Calcolo saldi completato.")
+        except Exception as e:
+            ui_logger.error(f"Errore durante il calcolo saldi: {e}")
+            QMessageBox.critical(self, "Errore", f"Impossibile calcolare i saldi: {e}")
 
     def _imposta_cella_saldi(self, row: int, col: int, testo: str,
                             evidenza: str = "normale") -> QTableWidgetItem:
@@ -920,7 +885,7 @@ class CalcolatoreFeriePAR(QMainWindow):
                 self.lbl_avviso.setText("")
 
     def importa_busta_paga(self) -> None:
-        """Importa buste paga con gestione errori e logging."""
+        """Importa buste paga con gestione errori, logging e progress bar."""
         if not HAS_PYPDF:
             ui_logger.error("Tentativo di importare PDF senza pypdf installato.")
             QMessageBox.critical(self, "Errore", "Libreria 'pypdf' mancante.\nInstalla con: pip install pypdf")
@@ -930,11 +895,30 @@ class CalcolatoreFeriePAR(QMainWindow):
         if not file_paths:
             return
 
+        # Mostra dialogo di progresso
+        progress = QProgressDialog(
+            "Elaborazione file...",
+            "Annulla",
+            0,
+            len(file_paths),
+            self
+        )
+        progress.setWindowTitle("Importazione Buste Paga")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
         ass_agg_totali = 0
         file_processati = 0
         errori = []
 
-        for file_path in file_paths:
+        for i, file_path in enumerate(file_paths):
+            progress.setValue(i)
+            progress.setLabelText(f"Elaborazione file {i+1}/{len(file_paths)}: {os.path.basename(file_path)}")
+            
+            if progress.wasCanceled():
+                ui_logger.info("Importazione annullata dall'utente.")
+                break
+
             try:
                 ui_logger.info(f"Elaborazione file: {file_path}")
                 testo = self.parser.leggi_testo(file_path)
@@ -961,6 +945,8 @@ class CalcolatoreFeriePAR(QMainWindow):
             except Exception as e:
                 ui_logger.error(f"Errore elaborazione file {file_path}: {e}")
                 errori.append(os.path.basename(file_path))
+
+        progress.close()
 
         if file_processati > 0:
             self.dm.storico_assenze.sort(key=lambda x: x["data"])

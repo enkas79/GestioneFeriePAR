@@ -446,8 +446,102 @@ class DataManager:
             if os.path.exists(config.FILE_BACKUP):
                 os.remove(config.FILE_BACKUP)
             return True
-        except OSError:
+        except OSError as e:
+            config.logger.error(f"Errore eliminazione file: {e}")
             return False
+
+    def calcola_saldi(self, data_assunzione: date, includi_patrono: bool, oggi: date = None) -> Dict[str, Dict[str, float]]:
+        """
+        Calcola i saldi di Ferie e PAR in modo indipendente dalla UI.
+        
+        Args:
+            data_assunzione (date): Data di assunzione del dipendente.
+            includi_patrono (bool): Se includere il S. Patrono (+8h).
+            oggi (date, optional): Data di riferimento per il calcolo. Default: date.today().
+        
+        Returns:
+            Dict[str, Dict[str, float]]: Dizionario con i risultati per Ferie e PAR.
+        """
+        if oggi is None:
+            oggi = date.today()
+        
+        calc = CalcolatoreLogica()
+        sp_ferie, sp_par = calc.calcola_spettanze(data_assunzione, includi_patrono)
+        mesi = calc.calcola_mesi_maturati(data_assunzione, oggi)
+
+        god_f_cal, god_p_cal = 0.0, 0.0
+        god_f_totale, god_p_totale = 0.0, 0.0
+        god_f_anno_precedente, god_p_anno_precedente = 0.0, 0.0
+        anno_precedente = oggi.year - 1
+
+        # Unisce storico reale e calendario collettivo
+        assenze = self._assenze_effettive_e_programmate()
+        
+        for x in assenze:
+            anno_assenza = x["data"].year()
+
+            # Le assenze dell'anno precedente scaricano il Residuo AP inserito/importato
+            if anno_assenza == anno_precedente:
+                if x["tipo"] == config.TIPO_FERIE:
+                    god_f_anno_precedente += x["ore"]
+                elif x["tipo"] == config.TIPO_PAR:
+                    god_p_anno_precedente += x["ore"]
+                continue
+
+            # Il calcolo del maturato/usato dell'anno corrente resta limitato all'anno corrente
+            if anno_assenza != oggi.year:
+                continue
+
+            is_cal = self.calendario.is_collettivo(x["data"]) or x.get("origine") == "Calendario"
+            if x["tipo"] == config.TIPO_FERIE:
+                god_f_totale += x["ore"]
+                if is_cal: god_f_cal += x["ore"]
+            elif x["tipo"] == config.TIPO_PAR:
+                god_p_totale += x["ore"]
+                if is_cal: god_p_cal += x["ore"]
+
+        mat_f = (sp_ferie / 12.0) * mesi
+        mat_p = (sp_par / 12.0) * mesi
+
+        god_f_normale = max(0.0, god_f_totale - god_f_cal)
+        god_p_normale = max(0.0, god_p_totale - god_p_cal)
+
+        res_ap_ferie_corretto = self.res_ap_ferie - god_f_anno_precedente
+        res_ap_par_corretto = self.res_ap_par - god_p_anno_precedente
+
+        risultato_ferie = calc.fifo_avanzato(
+            sp_ferie, res_ap_ferie_corretto, mat_f, god_f_normale, god_f_cal,
+            ap_scalato_anno_precedente=god_f_anno_precedente,
+            res_ap_iniziale=self.res_ap_ferie
+        )
+        risultato_par = calc.fifo_avanzato(
+            sp_par, res_ap_par_corretto, mat_p, god_p_normale, god_p_cal,
+            ap_scalato_anno_precedente=god_p_anno_precedente,
+            res_ap_iniziale=self.res_ap_par
+        )
+
+        return {
+            "ferie": risultato_ferie,
+            "par": risultato_par
+        }
+
+    def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
+        """Unisce storico reale e calendario collettivo, evitando doppi conteggi."""
+        righe: List[Dict[str, Any]] = [
+            {**item, "origine": "Storico"} for item in self.storico_assenze
+        ]
+        date_storico = {
+            item["data"].toString(config.DATE_FORMAT_INTERNAL)
+            for item in self.storico_assenze
+        }
+
+        for item in self.calendario.assenze_collettive_programmate():
+            key = item["data"].toString(config.DATE_FORMAT_INTERNAL)
+            if key not in date_storico:
+                righe.append(item)
+
+        righe.sort(key=lambda x: (x["data"], x["tipo"], x.get("origine", "")))
+        return righe
 
     def esporta_csv(self, path: str) -> bool:
         """Esporta lo storico delle assenze in formato CSV delimitato da punto e virgola."""
