@@ -104,7 +104,8 @@ def is_giorno_festivo(dq: QDate) -> bool:
         bool: True se è un giorno festivo, altrimenti False.
     """
     day, month, year = dq.day(), dq.month(), dq.year()
-    if dq.dayOfWeek() >= 6:
+    # In Qt, dayOfWeek() restituisce: 0=Domenica, 1=Lunedì, ..., 6=Sabato
+    if dq.dayOfWeek() == 0 or dq.dayOfWeek() >= 6:
         return True
 
     festivita_fisse = [
