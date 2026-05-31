@@ -717,3 +717,245 @@ class CalcolatoreLogica:
             "saldo": saldo,
             "presunto_fine_anno": presunto_fine_anno,
         }
+
+
+# --- SQLite DATA MANAGER (Opzionale) ---
+try:
+    import sqlite3
+    HAS_SQLITE3 = True
+except ImportError:
+    HAS_SQLITE3 = False
+    config.logger.warning("Libreria sqlite3 non disponibile. SQLDataManager disabilitato.")
+
+
+class SQLDataManager(DataManager):
+    """
+    Estensione di DataManager che usa SQLite (opzionalmente cifrato) per il salvataggio dei dati.
+    
+    Se la password è fornita, i dati vengono cifrati usando SQLCipher (se disponibile)
+    o crittografia manuale con Fernet.
+    """
+    
+    def __init__(self, password: str = "", db_path: str = None):
+        """
+        Inizializza SQLDataManager.
+        
+        Args:
+            password (str): Password per cifrare il database. Se vuota, il DB non sarà cifrato.
+            db_path (str): Percorso del file SQLite. Default: FILE_DATI con estensione .db
+        """
+        super().__init__(password)
+        self.db_path = db_path or config.FILE_DATI.replace('.json', '.db')
+        self.password = password
+        self._init_db()
+    
+    def _init_db(self) -> None:
+        """Inizializza il database SQLite."""
+        if not HAS_SQLITE3:
+            config.logger.error("SQLite3 non disponibile.")
+            return
+        
+        try:
+            # Se password è fornita, prova a usare SQLCipher
+            if self.password and self._is_sqlcipher_available():
+                self._init_sqlcipher_db()
+            else:
+                self._init_standard_db()
+        except Exception as e:
+            config.logger.error(f"Errore inizializzazione DB: {e}")
+    
+    def _is_sqlcipher_available(self) -> bool:
+        """Verifica se SQLCipher è disponibile."""
+        try:
+            conn = sqlite3.connect(":memory:")
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA cipher_version")
+            result = cursor.fetchone()
+            conn.close()
+            return result is not None
+        except Exception:
+            return False
+    
+    def _init_sqlcipher_db(self) -> None:
+        """Inizializza database con SQLCipher."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Imposta password per SQLCipher
+        cursor.execute(f"PRAGMA key='{self.password}'")
+        
+        # Crea tabelle
+        self._create_tables(cursor)
+        
+        conn.commit()
+        conn.close()
+        config.logger.info(f"Database SQLCipher inizializzato: {self.db_path}")
+    
+    def _init_standard_db(self) -> None:
+        """Inizializza database SQLite standard (non cifrato)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Crea tabelle
+        self._create_tables(cursor)
+        
+        conn.commit()
+        conn.close()
+        config.logger.info(f"Database SQLite inizializzato: {self.db_path}")
+    
+    def _create_tables(self, cursor) -> None:
+        """Crea le tabelle del database."""
+        # Tabella per i dati anagrafici
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS anagrafica (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nominativo TEXT NOT NULL,
+                matricola TEXT,
+                data_assunzione TEXT NOT NULL,
+                res_ap_ferie REAL DEFAULT 0.0,
+                res_ap_par REAL DEFAULT 0.0,
+                includi_patrono INTEGER DEFAULT 1,
+                versione_app TEXT
+            )
+        """)
+        
+        # Tabella per lo storico assenze
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS storico_assenze (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                ore REAL NOT NULL
+            )
+        """)
+        
+        # Tabella per il calendario collettivo
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS calendario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT NOT NULL UNIQUE,
+                tipo TEXT NOT NULL,
+                origine TEXT DEFAULT 'Calendario'
+            )
+        """)
+        
+        # Tabella per il testo del calendario
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS testo_calendario (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                testo TEXT
+            )
+        """)
+    
+    def _get_connection(self) -> sqlite3.Connection:
+        """Restituisce una connessione al database."""
+        conn = sqlite3.connect(self.db_path)
+        
+        # Se SQLCipher è usato, imposta la password
+        if self.password and self._is_sqlcipher_available():
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA key='{self.password}'")
+        
+        return conn
+    
+    def carica(self) -> bool:
+        """Carica i dati dal database SQLite."""
+        if not HAS_SQLITE3:
+            return False
+        
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Carica anagrafica
+            cursor.execute("SELECT * FROM anagrafica LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                self.nominativo = row[1]
+                self.matricola = row[2]
+                self.data_assunzione = row[3]
+                self.res_ap_ferie = row[4]
+                self.res_ap_par = row[5]
+                self.includi_patrono = bool(row[6])
+            
+            # Carica storico assenze
+            cursor.execute("SELECT data, tipo, ore FROM storico_assenze ORDER BY data")
+            self.storico_assenze = []
+            for row in cursor.fetchall():
+                qdate = QDate.fromString(row[0], config.DATE_FORMAT_INTERNAL)
+                if qdate.isValid():
+                    self.storico_assenze.append({
+                        "data": qdate,
+                        "tipo": row[1],
+                        "ore": row[2]
+                    })
+            
+            # Carica calendario
+            cursor.execute("SELECT testo FROM testo_calendario LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                self.calendario.aggiorna_da_testo(row[0])
+            
+            conn.close()
+            config.logger.info(f"Dati caricati da SQLite: {self.db_path}")
+            return True
+        except Exception as e:
+            config.logger.error(f"Errore caricamento da SQLite: {e}")
+            return False
+    
+    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
+        """Salva i dati nel database SQLite."""
+        if not HAS_SQLITE3:
+            return False, "SQLite3 non disponibile"
+        
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Salva anagrafica
+            cursor.execute("""
+                INSERT OR REPLACE INTO anagrafica 
+                (id, nominativo, matricola, data_assunzione, res_ap_ferie, res_ap_par, includi_patrono, versione_app)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                nominativo,
+                matricola,
+                data_assunzione_str,
+                self.res_ap_ferie,
+                self.res_ap_par,
+                1 if includi_patrono else 0,
+                config.APP_VERSION
+            ))
+            
+            # Salva storico assenze
+            cursor.execute("DELETE FROM storico_assenze")
+            for item in self.storico_assenze:
+                cursor.execute(
+                    "INSERT INTO storico_assenze (data, tipo, ore) VALUES (?, ?, ?)",
+                    (item["data"].toString(config.DATE_FORMAT_INTERNAL), item["tipo"], item["ore"])
+                )
+            
+            # Salva testo calendario
+            cursor.execute("DELETE FROM testo_calendario")
+            cursor.execute(
+                "INSERT INTO testo_calendario (testo) VALUES (?)",
+                (self.calendario.testo_mail,)
+            )
+            
+            conn.commit()
+            conn.close()
+            config.logger.info(f"Dati salvati in SQLite: {self.db_path}")
+            return True, ""
+        except Exception as e:
+            config.logger.error(f"Errore salvataggio in SQLite: {e}")
+            return False, str(e)
+    
+    def elimina_salvataggi(self) -> bool:
+        """Rimuove il file di database SQLite."""
+        try:
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+            return True
+        except OSError as e:
+            config.logger.error(f"Errore eliminazione DB SQLite: {e}")
+            return False

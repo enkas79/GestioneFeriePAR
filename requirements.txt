@@ -3,3 +3,5 @@ pypdf>=3.0.0
 cryptography>=41.0.0
 pytest>=7.0.0
 pytest-cov>=4.0.0
+pytest-qt>=4.0.0
+pysqlite3-binary>=0.5.0  # Per SQLite con supporto completo
