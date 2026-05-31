@@ -70,6 +70,9 @@ class CalcolatoreFeriePAR(QMainWindow):
         # Disabilita pulsanti se dipendenze mancano
         self._gestisci_dipendenze_mancanti()
 
+        # Controlla aggiornamenti all'avvio (in background)
+        self._check_updates_on_startup()
+
         # Carica i dati e verifica se è necessario chiedere una password
         if not self.dm.carica():
             ui_logger.info("Nessun file di dati esistente. Verrà creato un nuovo database.")
@@ -104,6 +107,49 @@ class CalcolatoreFeriePAR(QMainWindow):
             ui_logger.warning("pypdf non installato. Il pulsante 'Carica Buste Paga' è disabilitato.")
         if not HAS_CRYPTOGRAPHY:
             ui_logger.warning("cryptography non installato. La crittografia è disabilitata.")
+
+    def _check_updates_on_startup(self) -> None:
+        """Controlla aggiornamenti all'avvio in background e mostra notifica se disponibile."""
+        from models import UpdateManager
+        from PyQt6.QtCore import QTimer
+        
+        def check_updates():
+            """Esegue il controllo aggiornamenti in un thread separato per non bloccare la UI."""
+            try:
+                has_update, latest_ver, url = UpdateManager.check_for_updates()
+                if has_update:
+                    ui_logger.info(f"Aggiornamento disponibile: {latest_ver}")
+                    # Mostra notifica all'utente
+                    self._show_update_notification(latest_ver, url)
+            except Exception as e:
+                ui_logger.error(f"Errore controllo aggiornamenti all'avvio: {e}")
+        
+        # Esegue il controllo dopo 2 secondi per non rallentare l'avvio
+        QTimer.singleShot(2000, check_updates)
+
+    def _show_update_notification(self, latest_version: str, url: str) -> None:
+        """Mostra una notifica che un aggiornamento è disponibile."""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        # Mostra un messaggio non bloccante (usiamo un QMessageBox con pulsante "OK")
+        # Per non disturbare l'utente, usiamo un messaggio informativo
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Aggiornamento Disponibile")
+        msg_box.setText(f"È disponibile una nuova versione: <b>{latest_version}</b>")
+        msg_box.setInformativeText(f"Versione attuale: {config.APP_VERSION}")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        msg_box.setButtonText(QMessageBox.StandardButton.Yes, "Scarica Ora")
+        msg_box.setButtonText(QMessageBox.StandardButton.No, "Più Tardi")
+        
+        # Mostra il messaggio
+        result = msg_box.exec()
+        
+        if result == QMessageBox.StandardButton.Yes:
+            # Apre l'URL nel browser
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(url))
 
     def _richiesti_password_all_avvio(self) -> None:
         """Chiede la password all'utente se il file è cifrato."""
