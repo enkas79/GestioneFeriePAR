@@ -503,7 +503,8 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.spin_ore.setValue(8.0)
         self.spin_ore.setSuffix(" ore")
         self.spin_ore.setEnabled(False)
-        self.spin_ore.setFixedWidth(100)
+        self.spin_ore.setMinimumWidth(130)
+        self.spin_ore.setMaximumWidth(150)
 
         btn_add = QPushButton("Inserisci")
         btn_add.setFixedWidth(140)
