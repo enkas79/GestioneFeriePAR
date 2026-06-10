@@ -472,6 +472,7 @@ class DataManager:
         god_f_cal, god_p_cal = 0.0, 0.0
         god_f_totale, god_p_totale = 0.0, 0.0
         god_f_anno_precedente, god_p_anno_precedente = 0.0, 0.0
+        god_f_programmato_personale, god_p_programmato_personale = 0.0, 0.0
         anno_precedente = oggi.year - 1
 
         # Unisce storico reale e calendario collettivo
@@ -493,12 +494,20 @@ class DataManager:
                 continue
 
             is_cal = self.calendario.is_collettivo(x["data"]) or x.get("origine") == "Calendario"
+            is_programmata_personale = x.get("origine") == "Programmata" and not is_cal
+
             if x["tipo"] == config.TIPO_FERIE:
                 god_f_totale += x["ore"]
-                if is_cal: god_f_cal += x["ore"]
+                if is_cal:
+                    god_f_cal += x["ore"]
+                elif is_programmata_personale:
+                    god_f_programmato_personale += x["ore"]
             elif x["tipo"] == config.TIPO_PAR:
                 god_p_totale += x["ore"]
-                if is_cal: god_p_cal += x["ore"]
+                if is_cal:
+                    god_p_cal += x["ore"]
+                elif is_programmata_personale:
+                    god_p_programmato_personale += x["ore"]
 
         mat_f = (sp_ferie / 12.0) * mesi
         mat_p = (sp_par / 12.0) * mesi
@@ -512,12 +521,14 @@ class DataManager:
         risultato_ferie = calc.fifo_avanzato(
             sp_ferie, res_ap_ferie_corretto, mat_f, god_f_normale, god_f_cal,
             ap_scalato_anno_precedente=god_f_anno_precedente,
-            res_ap_iniziale=self.res_ap_ferie
+            res_ap_iniziale=self.res_ap_ferie,
+            goduto_programmato_personale=god_f_programmato_personale
         )
         risultato_par = calc.fifo_avanzato(
             sp_par, res_ap_par_corretto, mat_p, god_p_normale, god_p_cal,
             ap_scalato_anno_precedente=god_p_anno_precedente,
-            res_ap_iniziale=self.res_ap_par
+            res_ap_iniziale=self.res_ap_par,
+            goduto_programmato_personale=god_p_programmato_personale
         )
 
         return {
@@ -526,10 +537,21 @@ class DataManager:
         }
 
     def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
-        """Unisce storico reale e calendario collettivo, evitando doppi conteggi."""
-        righe: List[Dict[str, Any]] = [
-            {**item, "origine": "Storico"} for item in self.storico_assenze
-        ]
+        """
+        Unisce storico reale, assenze personali programmate e calendario collettivo,
+        evitando doppi conteggi.
+
+        Nota: le assenze personali future restano salvate nello storico_assenze come
+        normali record, ma vengono marcate a runtime con origine="Programmata"
+        per renderle distinguibili nella UI, nel report e nel CSV.
+        """
+        oggi = QDate.currentDate()
+        righe: List[Dict[str, Any]] = []
+
+        for item in self.storico_assenze:
+            origine = "Programmata" if item["data"] > oggi else "Storico"
+            righe.append({**item, "origine": origine})
+
         date_storico = {
             item["data"].toString(config.DATE_FORMAT_INTERNAL)
             for item in self.storico_assenze
@@ -546,11 +568,17 @@ class DataManager:
     def esporta_csv(self, path: str) -> bool:
         """Esporta lo storico delle assenze in formato CSV delimitato da punto e virgola."""
         try:
+            oggi = QDate.currentDate()
             with open(path, 'w', encoding='utf-8') as f:
                 f.write("Data;Tipo;Ore;Info\n")
                 for item in self.storico_assenze:
                     is_cal = self.calendario.is_collettivo(item['data'])
-                    info = "(Cal)" if is_cal else ""
+                    if is_cal:
+                        info = "(Cal)"
+                    elif item['data'] > oggi:
+                        info = "(Programmata)"
+                    else:
+                        info = ""
                     f.write(
                         f"{item['data'].toString(config.DATE_FORMAT_DISPLAY)};"
                         f"{item['tipo']};{item['ore']:.2f};{info}\n"
@@ -677,7 +705,8 @@ class CalcolatoreLogica:
     def fifo_avanzato(diritto: float, res_ap: float, maturato: float,
                       goduto_normale: float, goduto_cal: float,
                       ap_scalato_anno_precedente: float = 0.0,
-                      res_ap_iniziale: float | None = None) -> Dict[str, float]:
+                      res_ap_iniziale: float | None = None,
+                      goduto_programmato_personale: float = 0.0) -> Dict[str, float]:
         """
         Esegue lo scarico delle ore privilegiando il Residuo AP prima del Maturato corrente.
 
@@ -685,31 +714,52 @@ class CalcolatoreLogica:
         - res_ap è il Residuo AP effettivo da usare nel calcolo, già corretto con eventuali
           assenze dell'anno precedente presenti in calendario/storico.
         - res_ap_iniziale è il valore inserito/importato, usato solo per visualizzazione.
+        - goduto_programmato_personale è la quota di FERIE/PAR future inserite manualmente:
+          viene riservata/scalata dal Residuo AP prima di intaccare il maturato corrente.
         """
         if res_ap_iniziale is None:
             res_ap_iniziale = res_ap
+
+        # Valori difensivi: la quota programmata personale è un sottoinsieme del goduto normale.
+        goduto_programmato_personale = max(0.0, min(goduto_programmato_personale, goduto_normale))
+        goduto_normale_non_programmato = max(0.0, goduto_normale - goduto_programmato_personale)
 
         maturato_netto = maturato - goduto_cal
 
         # Se il residuo AP è già negativo dopo lo scarico dell'anno precedente,
         # non deve generare un consumo AP negativo sulle assenze dell'anno corrente.
         res_ap_consumabile = max(res_ap, 0.0)
-        consumo_ap = min(goduto_normale, res_ap_consumabile)
-        res_ap_netto = res_ap - consumo_ap
-        consumo_mat_normale = goduto_normale - consumo_ap
-        maturato_netto -= consumo_mat_normale
+
+        # Le assenze personali future devono consumare/prenotare prima il Residuo AP.
+        consumo_ap_programmato = min(goduto_programmato_personale, res_ap_consumabile)
+        res_ap_dopo_programmate = res_ap - consumo_ap_programmato
+
+        res_ap_consumabile = max(res_ap_dopo_programmate, 0.0)
+        consumo_ap_normale = min(goduto_normale_non_programmato, res_ap_consumabile)
+        res_ap_netto = res_ap_dopo_programmate - consumo_ap_normale
+
+        consumo_mat_programmato = goduto_programmato_personale - consumo_ap_programmato
+        consumo_mat_normale = goduto_normale_non_programmato - consumo_ap_normale
+        maturato_netto -= (consumo_mat_programmato + consumo_mat_normale)
+
         saldo = res_ap_netto + maturato_netto
 
         goduto_totale = goduto_normale + goduto_cal
         presunto_fine_anno = res_ap + diritto - goduto_totale
+        ap_scalato_anno_corrente = consumo_ap_programmato + consumo_ap_normale
+        ap_scalato_totale = ap_scalato_anno_precedente + ap_scalato_anno_corrente
 
         return {
             "diritto": diritto,
             "res_ap_iniziale": res_ap_iniziale,
             "ap_scalato_anno_precedente": ap_scalato_anno_precedente,
+            "ap_scalato_programmate_personali": consumo_ap_programmato,
+            "ap_scalato_anno_corrente": ap_scalato_anno_corrente,
+            "ap_scalato_totale": ap_scalato_totale,
             "res_ap": res_ap,
             "maturato": maturato,
             "goduto_normale": goduto_normale,
+            "goduto_programmato_personale": goduto_programmato_personale,
             "goduto_cal": goduto_cal,
             "goduto_tot": goduto_totale,
             "maturato_netto": maturato_netto,

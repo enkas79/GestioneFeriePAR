@@ -13,7 +13,7 @@ try:
     with open(os.path.join(os.path.dirname(__file__), "version.txt"), "r") as f:
         APP_VERSION = f.read().strip()
 except Exception:
-    APP_VERSION = "2.3.0"  # Fallback se version.txt non esiste
+    APP_VERSION = "2.3.4"  # Fallback se version.txt non esiste
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "enkas79")

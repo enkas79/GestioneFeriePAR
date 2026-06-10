@@ -580,7 +580,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.tab_saldi.setObjectName("tab_saldi")
         self.tab_saldi.setColumnCount(9)
         self.tab_saldi.setHorizontalHeaderLabels([
-            "Tipo", "Diritto\nannuo", "Residuo AP\niniziale", "AP usato\nanno prec.",
+            "Tipo", "Diritto\nannuo", "Residuo AP\niniziale", "AP usato\ntotale",
             "Maturato\nad oggi", "Usato\ntotale", "Residuo AP\nrimasto",
             "Disponibili\noggi", "Presunto\nfine anno"
         ])
@@ -705,6 +705,8 @@ class CalcolatoreFeriePAR(QMainWindow):
             is_cal = self.dm.calendario.is_collettivo(item["data"])
             if origine == "Calendario":
                 tipo_display = f"{item['tipo']} (Calendario)"
+            elif origine == "Programmata":
+                tipo_display = f"{item['tipo']} (Programmata)"
             elif is_cal:
                 tipo_display = f"{item['tipo']} (Cal)"
             else:
@@ -714,13 +716,22 @@ class CalcolatoreFeriePAR(QMainWindow):
             it_tipo = QTableWidgetItem(tipo_display)
             it_ore = QTableWidgetItem(utils.format_ore_decimali(float(item["ore"])))
 
-            if is_cal or origine == "Calendario":
-                color = QColor("#e8f4fd") if origine != "Calendario" else QColor("#fff3cd")
+            if is_cal or origine in ("Calendario", "Programmata"):
+                if origine == "Calendario":
+                    color = QColor("#fff3cd")
+                    foreground = QColor("#856404")
+                elif origine == "Programmata":
+                    color = QColor("#e8f7ee")
+                    foreground = QColor("#1f7a3a")
+                else:
+                    color = QColor("#e8f4fd")
+                    foreground = QColor("#005a9e")
+
                 it_data.setBackground(color)
                 it_tipo.setBackground(color)
                 it_ore.setBackground(color)
                 it_tipo.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-                it_tipo.setForeground(QColor("#005a9e") if origine != "Calendario" else QColor("#856404"))
+                it_tipo.setForeground(foreground)
 
             self.tab_storico.setItem(row, 0, it_data)
             self.tab_storico.setItem(row, 1, it_tipo)
@@ -757,13 +768,6 @@ class CalcolatoreFeriePAR(QMainWindow):
                 ui_logger.warning("Data di fine precedente alla data di inizio.")
                 return
             
-            # Validazione date future
-            today = QDate.currentDate()
-            if start > today:
-                QMessageBox.warning(self, "Errore", "Non puoi inserire assenze con data di inizio futura.")
-                ui_logger.warning(f"Tentativo di inserire assenza con data futura: {start.toString(config.DATE_FORMAT_DISPLAY)}")
-                return
-
             curr, inseriti = start, 0
             while curr <= end:
                 if not utils.is_giorno_festivo(curr):
@@ -777,13 +781,6 @@ class CalcolatoreFeriePAR(QMainWindow):
         else:
             data = self.date_inizio.date()
             
-            # Validazione data futura
-            today = QDate.currentDate()
-            if data > today:
-                QMessageBox.warning(self, "Errore", f"Non puoi inserire assenze con data futura: {data.toString(config.DATE_FORMAT_DISPLAY)}.")
-                ui_logger.warning(f"Tentativo di inserire assenza con data futura: {data.toString(config.DATE_FORMAT_DISPLAY)}")
-                return
-
             ok, _ = self._verifica_limite_ore(data, ore)
             if not ok:
                 QMessageBox.critical(self, "Errore", f"Superamento limite giornaliero ({config.MAX_ORE_GIORNALIERE}h).")
@@ -818,7 +815,10 @@ class CalcolatoreFeriePAR(QMainWindow):
                         # per rimuoverle bisogna modificare il testo del calendario collettivo.
                         continue
                     d = QDate.fromString(i_data.text(), config.DATE_FORMAT_DISPLAY)
-                    t = i_tipo.text().replace(" (Cal)", "").replace(" (Calendario)", "")
+                    t = (i_tipo.text()
+                         .replace(" (Cal)", "")
+                         .replace(" (Calendario)", "")
+                         .replace(" (Programmata)", ""))
                     for i, a in enumerate(self.dm.storico_assenze):
                         if a["data"] == d and a["tipo"] == t:
                             del self.dm.storico_assenze[i]
@@ -885,8 +885,9 @@ class CalcolatoreFeriePAR(QMainWindow):
         """Aggiorna la riga dei saldi usando ore decimali leggibili per l'utente."""
         self._imposta_cella_saldi(row, 1, utils.format_ore_decimali(r["diritto"]))
         self._imposta_cella_saldi(row, 2, utils.format_ore_decimali(r.get("res_ap_iniziale", r["res_ap"])))
-        self._imposta_cella_saldi(row, 3, utils.format_ore_decimali(r.get("ap_scalato_anno_precedente", 0.0)),
-                                  evidenza="attenzione" if r.get("ap_scalato_anno_precedente", 0.0) > 0 else "normale")
+        ap_scalato_totale = r.get("ap_scalato_totale", r.get("ap_scalato_anno_precedente", 0.0))
+        self._imposta_cella_saldi(row, 3, utils.format_ore_decimali(ap_scalato_totale),
+                                  evidenza="attenzione" if ap_scalato_totale > 0 else "normale")
         self._imposta_cella_saldi(row, 4, utils.format_ore_decimali(r["maturato"]))
         self._imposta_cella_saldi(row, 5, utils.format_ore_decimali(r["goduto_tot"]))
 
@@ -1090,7 +1091,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             return (f"<tr><td><b>{label}</b></td>"
                     f"<td>{utils.format_ore_decimali(r.get('diritto', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('res_ap_iniziale', r.get('res_ap', 0)))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('ap_scalato_anno_precedente', 0))}</td>"
+                    f"<td>{utils.format_ore_decimali(r.get('ap_scalato_totale', r.get('ap_scalato_anno_precedente', 0)))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('maturato', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('goduto_tot', 0))}</td>"
                     f"<td>{utils.format_ore_decimali(r.get('res_ap_netto', 0))}</td>"
@@ -1103,6 +1104,8 @@ class CalcolatoreFeriePAR(QMainWindow):
             is_cal = self.dm.calendario.is_collettivo(item["data"])
             if origine == "Calendario":
                 tipo_display = f"{item['tipo']} (Calendario)"
+            elif origine == "Programmata":
+                tipo_display = f"{item['tipo']} (Programmata)"
             elif is_cal:
                 tipo_display = f"{item['tipo']} (Cal)"
             else:
@@ -1142,9 +1145,9 @@ class CalcolatoreFeriePAR(QMainWindow):
             <p><b>Data Assunzione:</b> {html.escape(self.date_assunzione.text())}</p>
             <br><h3>Dettaglio saldi</h3>
             <p><b>Nota:</b> valori espressi in ore decimali. 3,5 h = 3 ore e mezza.</p>
-            <p><b>Calendario:</b> le date collettive programmate sono gia' scalate dai saldi come giornate intere da 8h, se non gia' presenti nello storico.</p>
+            <p><b>Programmazione:</b> le assenze personali future sono scalate prima dal Residuo AP; le date collettive restano scalate dai saldi dell'anno di competenza.</p>
             <table>
-                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP iniziale</th><th>AP usato anno prec.</th>
+                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP iniziale</th><th>AP usato totale</th>
                     <th>Maturato ad oggi</th><th>Usato totale</th><th>Residuo AP rimasto</th><th>Disponibili oggi</th><th>Presunto fine anno</th></tr>
                 {tr("FERIE", r_f)}
                 {tr("PAR", r_p)}
@@ -1267,7 +1270,7 @@ class CalcolatoreFeriePAR(QMainWindow):
                 Inserisci manualmente le assenze se non sono disponibili in formato digitale.
             </p>
             <ul>
-                <li><b>Data:</b> Seleziona la data dell'assenza (non può essere futura).</li>
+                <li><b>Data:</b> Seleziona la data dell'assenza. Può essere anche futura: in quel caso viene indicata come <b>Programmata</b>.</li>
                 <li><b>Periodo:</b> Spunta "Abilita Periodo" per inserire più giorni consecutivi.</li>
                 <li><b>Tipo:</b> Seleziona <b>FERIE</b> o <b>PAR</b>.</li>
                 <li><b>Ore:</b> Inserisci il numero di ore (massimo 8h/giorno). 
@@ -1285,6 +1288,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             </p>
             <ul>
                 <li>La tabella mostra <b>Data</b>, <b>Tipo</b> e <b>Ore</b> per ogni assenza.</li>
+                <li>Le assenze personali future sono evidenziate con la scritta <b>(Programmata)</b>.</li>
                 <li>Le assenze importate dal calendario sono evidenziate con lo sfondo giallo e la scritta <b>(Cal)</b>.</li>
                 <li>Puoi <b>filtrare per anno</b> usando il menu a tendina in alto.</li>
                 <li>Per <b>rimuovere</b> un'assenza, selezionala e premi <b>"Rimuovi Selezionati"</b> o il tasto <b>Canc</b>.</li>
@@ -1298,7 +1302,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             <ul>
                 <li><b>Diritto annuo:</b> Ore totali maturabili in un anno (160h + bonus anzianità).</li>
                 <li><b>Residuo AP iniziale:</b> Residuo Anno Precedente inserito manualmente o importato da busta paga.</li>
-                <li><b>AP usato anno prec.:</b> Ore di Residuo AP già utilizzate nell'anno precedente.</li>
+                <li><b>AP usato totale:</b> Ore di Residuo AP già consumate, comprese le assenze personali future programmate che prenotano il Residuo AP prima del maturato corrente.</li>
                 <li><b>Maturato ad oggi:</b> Ore maturate nell'anno corrente.</li>
                 <li><b>Usato totale:</b> Ore totali utilizzate (normali + calendario).</li>
                 <li><b>Residuo AP rimasto:</b> Residuo AP ancora disponibile.</li>

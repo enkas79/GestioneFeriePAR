@@ -6,6 +6,7 @@ Un'applicazione desktop professionale per la gestione, il calcolo e il monitorag
 * **Parsing Buste Paga:** Estrae in automatico i Residui Anni Precedenti e lo storico delle singole giornate direttamente dai cedolini in formato PDF (Zucchetti).
 * **Calendario Intelligente:** Analizza il testo delle email aziendali per riconoscere e isolare i giorni di chiusura collettiva (Cal), scorporando i festivi e i weekend in automatico.
 * **Calcolo Autonomo dei Saldi:** Applica logiche di scalamento (FIFO avanzato) scaricando i giorni prima dai Residui AP e poi dal Maturato corrente.
+* **Ferie/PAR Programmate Personali:** Permette di inserire assenze future personali, evidenziandole come programmate e scalando prima il Residuo AP, poi il maturato corrente solo se l'AP non basta.
 * **Esportazione:** Permette di salvare lo storico in formato CSV e generare un report formattato in PDF.
 * **Aggiornamenti OTA:** Sistema integrato che avvisa l'utente se su GitHub è stata pubblicata una versione più recente del software.
 
