@@ -185,6 +185,8 @@ class CalcolatoreFeriePAR(QMainWindow):
     def _applica_stile(self) -> None:
         self.setStyleSheet("""
             QMainWindow { background-color: #f4f4f4; }
+            QDialog { background-color: #f4f4f4; }
+            QMessageBox { background-color: #f4f4f4; }
             QGroupBox { font-weight: bold; border: 1px solid #aaa; border-radius: 6px;
                         margin-top: 12px; padding: 15px; background-color: white; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #333; }
