@@ -189,9 +189,14 @@ class CalcolatoreFeriePAR(QMainWindow):
                         margin-top: 12px; padding: 15px; background-color: white; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #333; }
             QLabel { font-size: 13px; color: #333; }
+            QCheckBox { font-size: 13px; color: #333; }
             QLineEdit, QDateEdit, QDoubleSpinBox, QComboBox, QTextEdit {
+                background-color: white; color: #1f2937;
                 padding: 6px; border: 1px solid #ccc; border-radius: 4px;
                 font-size: 13px; min-height: 20px; }
+            QComboBox QAbstractItemView, QCalendarWidget QWidget {
+                background-color: white; color: #1f2937;
+                selection-background-color: #cfe8ff; selection-color: #1f2937; }
             QPushButton { background-color: #0078d7; color: white; border-radius: 4px;
                           padding: 8px 15px; font-weight: bold; font-size: 13px; }
             QPushButton:hover { background-color: #005a9e; }
@@ -204,6 +209,8 @@ class CalcolatoreFeriePAR(QMainWindow):
             QPushButton#btn_calendario { background-color: #28a745; }
             QPushButton#btn_calendario:hover { background-color: #218838; }
             QTableWidget {
+                background-color: white;
+                color: #1f2937;
                 gridline-color: #e3e7ee;
                 font-size: 13px;
                 alternate-background-color: #f8fafc;
