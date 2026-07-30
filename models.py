@@ -35,39 +35,71 @@ except ImportError:
     config.logger.warning("Libreria 'cryptography' non installata. I dati verranno salvati in chiaro.")
 
 
+# Iterazioni PBKDF2-HMAC-SHA256 per la derivazione della chiave (indicazione OWASP 2023).
+_PBKDF2_ITERATIONS = 480_000
+_SALT_SIZE = 16
+# Tutti i token Fernet iniziano con questi byte (version=0x80 codificato in base64 url-safe):
+# serve per riconoscere i database cifrati con il vecchio schema (senza salt).
+_LEGACY_TOKEN_PREFIX = b"gAAAAA"
+
+
 class EncryptionManager:
-    """Gestisce la crittografia e decrittografia dei dati usando AES-256 (Fernet)."""
-    
+    """Gestisce la crittografia e decrittografia dei dati usando AES-256 (Fernet).
+
+    La chiave viene derivata dalla password con PBKDF2-HMAC-SHA256 e un salt
+    casuale generato ad ogni cifratura (il salt viene prependuto ai dati cifrati).
+    In lettura è comunque supportato il vecchio schema (chiave = SHA-256 diretto
+    della password, senza salt), usato dalle versioni precedenti dell'app, per non
+    rendere illeggibili i database già cifrati in passato.
+    """
+
     def __init__(self, password: str = ""):
         """
         Inizializza il gestore di crittografia.
-        
+
         Args:
             password (str): Password utente per derivare la chiave. Se vuota, usa una chiave predefinita.
         """
         self.password = password
-        self.key = self._derive_key(password) if password else None
-        self.cipher_suite = Fernet(self.key) if self.key else None
-    
-    def _derive_key(self, password: str) -> bytes:
-        """Deriva una chiave Fernet (32-byte URL-safe base64) dalla password."""
-        # Usa SHA-256 per derivare una chiave di 32 byte
+        self._has_key = bool(password)
+
+    def _derive_key(self, password: str, salt: bytes) -> bytes:
+        """Deriva una chiave Fernet (32-byte URL-safe base64) dalla password con PBKDF2."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=_PBKDF2_ITERATIONS)
+        return base64.urlsafe_b64encode(kdf.derive(password.encode('utf-8')))
+
+    def _derive_key_legacy(self, password: str) -> bytes:
+        """Vecchio schema di derivazione (SHA-256 diretto, senza salt).
+
+        Mantenuto solo per decifrare i database creati con versioni precedenti
+        dell'app: non va usato per nuove cifrature.
+        """
         digest = hashlib.sha256(password.encode()).digest()
-        # Fernet richiede una chiave URL-safe base64-encoded di 32 byte
         return base64.urlsafe_b64encode(digest)
-    
+
     def encrypt(self, data: str) -> bytes:
-        """Cifra una stringa JSON."""
-        if not self.cipher_suite:
+        """Cifra una stringa JSON con un nuovo salt casuale (prependuto al risultato)."""
+        if not self._has_key:
             raise ValueError("Nessuna chiave di crittografia disponibile.")
-        return self.cipher_suite.encrypt(data.encode('utf-8'))
-    
+        salt = os.urandom(_SALT_SIZE)
+        key = self._derive_key(self.password, salt)
+        return salt + Fernet(key).encrypt(data.encode('utf-8'))
+
     def decrypt(self, encrypted_data: bytes) -> str:
-        """Decifra dati cifrati."""
-        if not self.cipher_suite:
+        """Decifra dati cifrati, supportando sia il formato attuale (salt+token) sia quello legacy."""
+        if not self._has_key:
             raise ValueError("Nessuna chiave di crittografia disponibile.")
-        return self.cipher_suite.decrypt(encrypted_data).decode('utf-8')
-    
+        if encrypted_data.startswith(_LEGACY_TOKEN_PREFIX):
+            key = self._derive_key_legacy(self.password)
+            token = encrypted_data
+        else:
+            salt, token = encrypted_data[:_SALT_SIZE], encrypted_data[_SALT_SIZE:]
+            key = self._derive_key(self.password, salt)
+        return Fernet(key).decrypt(token).decode('utf-8')
+
     @staticmethod
     def is_encrypted(file_path: str) -> bool:
         """Verifica se un file è cifrato (contiene dati binari)."""
@@ -768,244 +800,3 @@ class CalcolatoreLogica:
             "presunto_fine_anno": presunto_fine_anno,
         }
 
-
-# --- SQLite DATA MANAGER (Opzionale) ---
-try:
-    import sqlite3
-    HAS_SQLITE3 = True
-except ImportError:
-    HAS_SQLITE3 = False
-    config.logger.warning("Libreria sqlite3 non disponibile. SQLDataManager disabilitato.")
-
-
-class SQLDataManager(DataManager):
-    """
-    Estensione di DataManager che usa SQLite (opzionalmente cifrato) per il salvataggio dei dati.
-    
-    Se la password è fornita, i dati vengono cifrati usando SQLCipher (se disponibile)
-    o crittografia manuale con Fernet.
-    """
-    
-    def __init__(self, password: str = "", db_path: str = None):
-        """
-        Inizializza SQLDataManager.
-        
-        Args:
-            password (str): Password per cifrare il database. Se vuota, il DB non sarà cifrato.
-            db_path (str): Percorso del file SQLite. Default: FILE_DATI con estensione .db
-        """
-        super().__init__(password)
-        self.db_path = db_path or config.FILE_DATI.replace('.json', '.db')
-        self.password = password
-        self._init_db()
-    
-    def _init_db(self) -> None:
-        """Inizializza il database SQLite."""
-        if not HAS_SQLITE3:
-            config.logger.error("SQLite3 non disponibile.")
-            return
-        
-        try:
-            # Se password è fornita, prova a usare SQLCipher
-            if self.password and self._is_sqlcipher_available():
-                self._init_sqlcipher_db()
-            else:
-                self._init_standard_db()
-        except Exception as e:
-            config.logger.error(f"Errore inizializzazione DB: {e}")
-    
-    def _is_sqlcipher_available(self) -> bool:
-        """Verifica se SQLCipher è disponibile."""
-        try:
-            conn = sqlite3.connect(":memory:")
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA cipher_version")
-            result = cursor.fetchone()
-            conn.close()
-            return result is not None
-        except Exception:
-            return False
-    
-    def _init_sqlcipher_db(self) -> None:
-        """Inizializza database con SQLCipher."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Imposta password per SQLCipher
-        cursor.execute(f"PRAGMA key='{self.password}'")
-        
-        # Crea tabelle
-        self._create_tables(cursor)
-        
-        conn.commit()
-        conn.close()
-        config.logger.info(f"Database SQLCipher inizializzato: {self.db_path}")
-    
-    def _init_standard_db(self) -> None:
-        """Inizializza database SQLite standard (non cifrato)."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Crea tabelle
-        self._create_tables(cursor)
-        
-        conn.commit()
-        conn.close()
-        config.logger.info(f"Database SQLite inizializzato: {self.db_path}")
-    
-    def _create_tables(self, cursor) -> None:
-        """Crea le tabelle del database."""
-        # Tabella per i dati anagrafici
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS anagrafica (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nominativo TEXT NOT NULL,
-                matricola TEXT,
-                data_assunzione TEXT NOT NULL,
-                res_ap_ferie REAL DEFAULT 0.0,
-                res_ap_par REAL DEFAULT 0.0,
-                includi_patrono INTEGER DEFAULT 1,
-                versione_app TEXT
-            )
-        """)
-        
-        # Tabella per lo storico assenze
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS storico_assenze (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT NOT NULL,
-                tipo TEXT NOT NULL,
-                ore REAL NOT NULL
-            )
-        """)
-        
-        # Tabella per il calendario collettivo
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS calendario (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT NOT NULL UNIQUE,
-                tipo TEXT NOT NULL,
-                origine TEXT DEFAULT 'Calendario'
-            )
-        """)
-        
-        # Tabella per il testo del calendario
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS testo_calendario (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                testo TEXT
-            )
-        """)
-    
-    def _get_connection(self) -> sqlite3.Connection:
-        """Restituisce una connessione al database."""
-        conn = sqlite3.connect(self.db_path)
-        
-        # Se SQLCipher è usato, imposta la password
-        if self.password and self._is_sqlcipher_available():
-            cursor = conn.cursor()
-            cursor.execute(f"PRAGMA key='{self.password}'")
-        
-        return conn
-    
-    def carica(self) -> bool:
-        """Carica i dati dal database SQLite."""
-        if not HAS_SQLITE3:
-            return False
-        
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # Carica anagrafica
-            cursor.execute("SELECT * FROM anagrafica LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                self.nominativo = row[1]
-                self.matricola = row[2]
-                self.data_assunzione = row[3]
-                self.res_ap_ferie = row[4]
-                self.res_ap_par = row[5]
-                self.includi_patrono = bool(row[6])
-            
-            # Carica storico assenze
-            cursor.execute("SELECT data, tipo, ore FROM storico_assenze ORDER BY data")
-            self.storico_assenze = []
-            for row in cursor.fetchall():
-                qdate = QDate.fromString(row[0], config.DATE_FORMAT_INTERNAL)
-                if qdate.isValid():
-                    self.storico_assenze.append({
-                        "data": qdate,
-                        "tipo": row[1],
-                        "ore": row[2]
-                    })
-            
-            # Carica calendario
-            cursor.execute("SELECT testo FROM testo_calendario LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                self.calendario.aggiorna_da_testo(row[0])
-            
-            conn.close()
-            config.logger.info(f"Dati caricati da SQLite: {self.db_path}")
-            return True
-        except Exception as e:
-            config.logger.error(f"Errore caricamento da SQLite: {e}")
-            return False
-    
-    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
-        """Salva i dati nel database SQLite."""
-        if not HAS_SQLITE3:
-            return False, "SQLite3 non disponibile"
-        
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # Salva anagrafica
-            cursor.execute("""
-                INSERT OR REPLACE INTO anagrafica 
-                (id, nominativo, matricola, data_assunzione, res_ap_ferie, res_ap_par, includi_patrono, versione_app)
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                nominativo,
-                matricola,
-                data_assunzione_str,
-                self.res_ap_ferie,
-                self.res_ap_par,
-                1 if includi_patrono else 0,
-                config.APP_VERSION
-            ))
-            
-            # Salva storico assenze
-            cursor.execute("DELETE FROM storico_assenze")
-            for item in self.storico_assenze:
-                cursor.execute(
-                    "INSERT INTO storico_assenze (data, tipo, ore) VALUES (?, ?, ?)",
-                    (item["data"].toString(config.DATE_FORMAT_INTERNAL), item["tipo"], item["ore"])
-                )
-            
-            # Salva testo calendario
-            cursor.execute("DELETE FROM testo_calendario")
-            cursor.execute(
-                "INSERT INTO testo_calendario (testo) VALUES (?)",
-                (self.calendario.testo_mail,)
-            )
-            
-            conn.commit()
-            conn.close()
-            config.logger.info(f"Dati salvati in SQLite: {self.db_path}")
-            return True, ""
-        except Exception as e:
-            config.logger.error(f"Errore salvataggio in SQLite: {e}")
-            return False, str(e)
-    
-    def elimina_salvataggi(self) -> bool:
-        """Rimuove il file di database SQLite."""
-        try:
-            if os.path.exists(self.db_path):
-                os.remove(self.db_path)
-            return True
-        except OSError as e:
-            config.logger.error(f"Errore eliminazione DB SQLite: {e}")
-            return False

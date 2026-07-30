@@ -50,10 +50,6 @@ setup(
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
             "pytest-qt>=4.0.0",
-            "pysqlite3-binary>=0.5.0",
-        ],
-        "sqlite": [
-            "pysqlite3-binary>=0.5.0",
         ],
     },
     entry_points={
