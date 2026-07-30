@@ -25,7 +25,7 @@ except ImportError:
     Qt = MagicMock()
     QFont = MagicMock()
     QColor = MagicMock()
-    
+
     # Simula QDate
     def create_qdate(year, month, day):
         mock = MagicMock()
@@ -36,10 +36,10 @@ except ImportError:
         mock.isValid.return_value = True
         mock.dayOfWeek.return_value = (date(year, month, day).weekday() + 1) % 7  # 0=Lun, 6=Dom
         return mock
-    
+
     QDate.fromString = MagicMock(side_effect=lambda s, fmt: create_qdate(2023, 1, 1))
     QDate.currentDate = MagicMock(return_value=create_qdate(date.today().year, date.today().month, date.today().day))
-    
+
     # Simula Qt.AlignmentFlag
     Qt.AlignmentFlag = MagicMock()
     Qt.AlignmentFlag.AlignCenter = 0
@@ -78,7 +78,7 @@ def sample_ore_zucchetti():
 def sample_assenze():
     """Restituisce un esempio di storico assenze."""
     from unittest.mock import MagicMock
-    
+
     def create_mock_qdate(year, month, day):
         mock = MagicMock()
         mock.year.return_value = year
@@ -87,7 +87,7 @@ def sample_assenze():
         mock.toString.return_value = f"{year:04d}-{month:02d}-{day:02d}"
         mock.isValid.return_value = True
         return mock
-    
+
     return [
         {"data": create_mock_qdate(2023, 1, 10), "tipo": "FERIE", "ore": 8.0},
         {"data": create_mock_qdate(2023, 1, 15), "tipo": "PAR", "ore": 4.0},

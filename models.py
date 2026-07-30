@@ -14,7 +14,7 @@ import urllib.error
 import base64
 import hashlib
 from datetime import date
-from typing import Dict, List, Set, Tuple, Any, Optional
+from typing import Dict, List, Set, Tuple, Any
 from PyQt6.QtCore import QDate
 
 import config
@@ -204,7 +204,10 @@ class CalendarManager:
 
             tipo_collettivo = self._tipo_da_linea(linea_lower)
 
-            pat_range = r'da[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s*(?:([a-z]+)\s+)?(?:20\d{2}\s+)?a[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s+([a-z]+)'
+            pat_range = (
+                r'da[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s*(?:([a-z]+)\s+)?(?:20\d{2}\s+)?'
+                r'a[l]?\s+(?:[a-zì]+\s+)?(\d{1,2})\s+([a-z]+)'
+            )
             m_range = re.search(pat_range, linea_lower)
 
             if m_range:
@@ -306,7 +309,7 @@ class DataManager:
     def __init__(self, password: str = "") -> None:
         """
         Inizializza il DataManager.
-        
+
         Args:
             password (str): Password per la crittografia. Se vuota, i dati verranno salvati in chiaro.
         """
@@ -390,7 +393,7 @@ class DataManager:
                 # Prova a leggere come JSON in chiaro
                 with open(path, 'r', encoding='utf-8') as f:
                     raw = json.load(f)
-            
+
             if not isinstance(raw, dict):
                 raise ValueError("Il file non contiene un database valido.")
             return raw
@@ -401,12 +404,32 @@ class DataManager:
             config.logger.error(f"Errore lettura file {path}: {e}")
             raise ValueError(f"Impossibile leggere il file: {e}")
 
+    @staticmethod
+    def _percorsi_backup_rotanti() -> List[str]:
+        """Restituisce i percorsi dei backup rotanti in ordine dal più recente al più vecchio."""
+        return [config.FILE_BACKUP] + [
+            f"{config.FILE_BACKUP}.{i}" for i in range(1, config.MAX_BACKUP_COUNT)
+        ]
+
+    def _ruota_backup(self) -> None:
+        """Fa scorrere i backup esistenti (.bak, .bak.1, .bak.2, ...) prima di crearne uno nuovo,
+        così da mantenere più copie storiche invece di sovrascrivere l'unico backup disponibile."""
+        percorsi = self._percorsi_backup_rotanti()
+        for i in range(len(percorsi) - 1, 0, -1):
+            src, dst = percorsi[i - 1], percorsi[i]
+            if os.path.exists(src):
+                shutil.move(src, dst)
+
     def _salva_payload_su_file(self, path: str, payload: Dict[str, Any], crea_backup: bool = False) -> None:
-        """Scrive un payload JSON su file (con crittografia se disponibile), opzionalmente creando un backup preventivo."""
+        """Scrive un payload JSON su file (con crittografia se disponibile).
+
+        Se `crea_backup` è True, ruota i backup rotanti prima di scriverne uno nuovo.
+        """
         try:
             if crea_backup and os.path.exists(path):
+                self._ruota_backup()
                 shutil.copy2(path, config.FILE_BACKUP)
-            
+
             # Salva con crittografia se disponibile e password impostata
             if HAS_CRYPTOGRAPHY and self.encryption_manager and self.password:
                 json_data = json.dumps(payload, indent=4, ensure_ascii=False)
@@ -447,7 +470,9 @@ class DataManager:
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as e:
             return False, str(e)
 
-    def salva(self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool) -> Tuple[bool, str]:
+    def salva(
+        self, nominativo: str, matricola: str, data_assunzione_str: str, includi_patrono: bool
+    ) -> Tuple[bool, str]:
         """Salva i dati correnti sul database predefinito effettuando un backup preventivo."""
         self.nominativo = nominativo
         self.matricola = matricola
@@ -471,32 +496,35 @@ class DataManager:
             return False, str(e)
 
     def elimina_salvataggi(self) -> bool:
-        """Rimuove permanentemente i file di salvataggio e di backup dal disco."""
+        """Rimuove permanentemente il file di salvataggio e tutti i backup rotanti dal disco."""
         try:
             if os.path.exists(config.FILE_DATI):
                 os.remove(config.FILE_DATI)
-            if os.path.exists(config.FILE_BACKUP):
-                os.remove(config.FILE_BACKUP)
+            for percorso in self._percorsi_backup_rotanti():
+                if os.path.exists(percorso):
+                    os.remove(percorso)
             return True
         except OSError as e:
             config.logger.error(f"Errore eliminazione file: {e}")
             return False
 
-    def calcola_saldi(self, data_assunzione: date, includi_patrono: bool, oggi: date = None) -> Dict[str, Dict[str, float]]:
+    def calcola_saldi(
+        self, data_assunzione: date, includi_patrono: bool, oggi: date = None
+    ) -> Dict[str, Dict[str, float]]:
         """
         Calcola i saldi di Ferie e PAR in modo indipendente dalla UI.
-        
+
         Args:
             data_assunzione (date): Data di assunzione del dipendente.
             includi_patrono (bool): Se includere il S. Patrono (+8h).
             oggi (date, optional): Data di riferimento per il calcolo. Default: date.today().
-        
+
         Returns:
             Dict[str, Dict[str, float]]: Dizionario con i risultati per Ferie e PAR.
         """
         if oggi is None:
             oggi = date.today()
-        
+
         calc = CalcolatoreLogica()
         sp_ferie, sp_par = calc.calcola_spettanze(data_assunzione, includi_patrono)
         mesi = calc.calcola_mesi_maturati(data_assunzione, oggi)
@@ -509,7 +537,7 @@ class DataManager:
 
         # Unisce storico reale e calendario collettivo
         assenze = self._assenze_effettive_e_programmate()
-        
+
         for x in assenze:
             anno_assenza = x["data"].year()
 

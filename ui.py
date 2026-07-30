@@ -4,7 +4,6 @@ Costruisce la finestra grafica utilizzando le classi di PyQt6.
 """
 
 import os
-import html
 import logging
 from datetime import date
 from typing import Any, Dict, List, Tuple
@@ -15,13 +14,15 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QComboBox, QMessageBox,
                              QAbstractItemView, QLineEdit, QFileDialog, QInputDialog,
                              QGridLayout, QDialog, QTextBrowser,
-                             QDialogButtonBox, QProgressBar, QTextEdit, QProgressDialog)
+                             QDialogButtonBox, QProgressBar, QProgressDialog)
 from PyQt6.QtCore import Qt, QDate, QUrl
 from PyQt6.QtGui import QFont, QColor, QAction, QTextDocument, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtPrintSupport import QPrinter
 
 import config
+import report
 import utils
+from dialogs import CalendarioCollettivoDialog
 from models import DataManager, BustaPageParser, CalcolatoreLogica, HAS_PYPDF, UpdateManager, HAS_CRYPTOGRAPHY
 
 # Configura logging per la UI
@@ -66,7 +67,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.crea_sezione_comandi()
 
         self._registra_shortcuts()
-        
+
         # Disabilita pulsanti se dipendenze mancano
         self._gestisci_dipendenze_mancanti()
 
@@ -80,7 +81,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             # Se il file è cifrato, chiede la password
             if HAS_CRYPTOGRAPHY and self._is_file_encrypted(config.FILE_DATI):
                 self._richiesti_password_all_avvio()
-        
+
         self._popola_ui_da_dm()
         self.calcola()
 
@@ -101,7 +102,7 @@ class CalcolatoreFeriePAR(QMainWindow):
                 if not HAS_PYPDF:
                     child.setToolTip("Installa pypdf per importare PDF: pip install pypdf")
                 break
-        
+
         # Logga lo stato delle dipendenze
         if not HAS_PYPDF:
             ui_logger.warning("pypdf non installato. Il pulsante 'Carica Buste Paga' è disabilitato.")
@@ -112,7 +113,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         """Controlla aggiornamenti all'avvio in background e mostra notifica se disponibile."""
         from models import UpdateManager
         from PyQt6.QtCore import QTimer
-        
+
         def check_updates():
             """Esegue il controllo aggiornamenti in un thread separato per non bloccare la UI."""
             try:
@@ -123,14 +124,14 @@ class CalcolatoreFeriePAR(QMainWindow):
                     self._show_update_notification(latest_ver, url)
             except Exception as e:
                 ui_logger.error(f"Errore controllo aggiornamenti all'avvio: {e}")
-        
+
         # Esegue il controllo dopo 2 secondi per non rallentare l'avvio
         QTimer.singleShot(2000, check_updates)
 
     def _show_update_notification(self, latest_version: str, url: str) -> None:
         """Mostra una notifica che un aggiornamento è disponibile."""
         from PyQt6.QtWidgets import QMessageBox
-        
+
         # Mostra un messaggio non bloccante (usiamo un QMessageBox con pulsante "OK")
         # Per non disturbare l'utente, usiamo un messaggio informativo
         msg_box = QMessageBox(self)
@@ -141,10 +142,10 @@ class CalcolatoreFeriePAR(QMainWindow):
         msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
         msg_box.setButtonText(QMessageBox.StandardButton.Yes, "Scarica Ora")
         msg_box.setButtonText(QMessageBox.StandardButton.No, "Più Tardi")
-        
+
         # Mostra il messaggio
         result = msg_box.exec()
-        
+
         if result == QMessageBox.StandardButton.Yes:
             # Apre l'URL nel browser
             from PyQt6.QtGui import QDesktopServices
@@ -323,7 +324,10 @@ class CalcolatoreFeriePAR(QMainWindow):
         """Genera un nome file leggibile per il salvataggio del database."""
         nome = (self.txt_nominativo.text().strip() or self.dm.nominativo or "dipendente").strip()
         anno = str(date.today().year)
-        anni = {item["data"].year() for item in self._assenze_effettive_e_programmate()} if hasattr(self, "tab_storico") else set()
+        anni = (
+            {item["data"].year() for item in self._assenze_effettive_e_programmate()}
+            if hasattr(self, "tab_storico") else set()
+        )
         if len(anni) == 1:
             anno = str(next(iter(anni)))
         nome_pulito = "".join(ch if ch.isalnum() else "_" for ch in nome).strip("_") or "dipendente"
@@ -430,35 +434,14 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.main_layout.addWidget(group)
 
     def apri_dialog_calendario(self) -> None:
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Imposta Giorni Collettivi")
-        dlg.resize(650, 450)
-        lay = QVBoxLayout(dlg)
-
-        lbl_info = QLabel("Incolla qui le righe estratte dalla mail ufficiale aziendale.\n")
-        lay.addWidget(lbl_info)
-
-        txt_edit = QTextEdit()
-        txt_edit.setPlainText(self.dm.calendario.testo_mail)
-        lay.addWidget(txt_edit)
-
-        btn_salva = QPushButton("Analizza e Salva Date")
-
-        def on_salva() -> None:
-            testo = txt_edit.toPlainText()
+        def analizza(testo: str) -> int:
             date_trovate = self.dm.calendario.aggiorna_da_testo(testo)
-            QMessageBox.information(
-                dlg, "Analisi Completata",
-                f"Aggiunte {date_trovate} date valide al Calendario Collettivo.\n"
-                "Le date del calendario vengono scalate automaticamente dai saldi come giornate intere da 8h."
-            )
             self.salva_dati_su_file()
             self.aggiorna_tabella_storico()
             self.calcola()
-            dlg.accept()
+            return date_trovate
 
-        btn_salva.clicked.connect(on_salva)
-        lay.addWidget(btn_salva)
+        dlg = CalendarioCollettivoDialog(self, self.dm.calendario.testo_mail, analizza)
         dlg.exec()
 
     def crea_sezione_inserimento(self) -> None:
@@ -691,6 +674,24 @@ class CalcolatoreFeriePAR(QMainWindow):
         # Usa il metodo di DataManager per centralizzare la logica
         return self.dm._assenze_effettive_e_programmate()
 
+    def _descrivi_assenza(self, item: Dict[str, Any]) -> Tuple[str, str, bool]:
+        """Deduce (tipo_display, origine, is_cal) per una riga di storico/calendario.
+
+        Condiviso fra la tabella storico e il report PDF per evitare di duplicare
+        la stessa logica di etichettatura in due punti diversi.
+        """
+        origine = item.get("origine", "Storico")
+        is_cal = self.dm.calendario.is_collettivo(item["data"])
+        if origine == "Calendario":
+            tipo_display = f"{item['tipo']} (Calendario)"
+        elif origine == "Programmata":
+            tipo_display = f"{item['tipo']} (Programmata)"
+        elif is_cal:
+            tipo_display = f"{item['tipo']} (Cal)"
+        else:
+            tipo_display = item["tipo"]
+        return tipo_display, origine, is_cal
+
     def aggiorna_tabella_storico(self) -> None:
         filtro = self.combo_filtro_anno.currentText()
         self.tab_storico.setRowCount(0)
@@ -702,16 +703,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             row = self.tab_storico.rowCount()
             self.tab_storico.insertRow(row)
 
-            origine = item.get("origine", "Storico")
-            is_cal = self.dm.calendario.is_collettivo(item["data"])
-            if origine == "Calendario":
-                tipo_display = f"{item['tipo']} (Calendario)"
-            elif origine == "Programmata":
-                tipo_display = f"{item['tipo']} (Programmata)"
-            elif is_cal:
-                tipo_display = f"{item['tipo']} (Cal)"
-            else:
-                tipo_display = item["tipo"]
+            tipo_display, origine, is_cal = self._descrivi_assenza(item)
 
             it_data = QTableWidgetItem(item["data"].toString(config.DATE_FORMAT_DISPLAY))
             it_tipo = QTableWidgetItem(tipo_display)
@@ -762,13 +754,13 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         if self.check_periodo.isChecked():
             start, end = self.date_inizio.date(), self.date_fine.date()
-            
+
             # Validazione date
             if start > end:
                 QMessageBox.warning(self, "Errore", "La data di fine deve essere successiva alla data di inizio.")
                 ui_logger.warning("Data di fine precedente alla data di inizio.")
                 return
-            
+
             curr, inseriti = start, 0
             while curr <= end:
                 if not utils.is_giorno_festivo(curr):
@@ -781,7 +773,7 @@ class CalcolatoreFeriePAR(QMainWindow):
             QMessageBox.information(self, "Info", f"Inseriti {inseriti} giorni lavorativi.")
         else:
             data = self.date_inizio.date()
-            
+
             ok, _ = self._verifica_limite_ore(data, ore)
             if not ok:
                 QMessageBox.critical(self, "Errore", f"Superamento limite giornaliero ({config.MAX_ORE_GIORNALIERE}h).")
@@ -835,17 +827,17 @@ class CalcolatoreFeriePAR(QMainWindow):
         d_ass = date(qd.year(), qd.month(), qd.day())
         today = date.today()
         includi_patrono = self.check_patrono.isChecked()
-        
+
         ui_logger.info("Avvio calcolo saldi...")
-        
+
         try:
             risultati = self.dm.calcola_saldi(d_ass, includi_patrono, oggi=today)
             self._ultimo_calc_ferie = risultati["ferie"]
             self._ultimo_calc_par = risultati["par"]
-            
+
             self._aggiorna_riga(0, self._ultimo_calc_ferie, self.bar_ferie, config.TIPO_FERIE)
             self._aggiorna_riga(1, self._ultimo_calc_par, self.bar_par, config.TIPO_PAR)
-            
+
             ui_logger.info("Calcolo saldi completato.")
         except Exception as e:
             ui_logger.error(f"Errore durante il calcolo saldi: {e}")
@@ -962,7 +954,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         for i, file_path in enumerate(file_paths):
             progress.setValue(i)
             progress.setLabelText(f"Elaborazione file {i+1}/{len(file_paths)}: {os.path.basename(file_path)}")
-            
+
             if progress.wasCanceled():
                 ui_logger.info("Importazione annullata dall'utente.")
                 break
@@ -987,7 +979,10 @@ class CalcolatoreFeriePAR(QMainWindow):
                         if not dup:
                             self.dm.storico_assenze.append(g)
                             ass_agg_totali += 1
-                            ui_logger.info(f"Aggiunta assenza da busta: {g['data'].toString(config.DATE_FORMAT_DISPLAY)}, {g['tipo']}, {g['ore']}h")
+                            ui_logger.info(
+                                f"Aggiunta assenza da busta: "
+                                f"{g['data'].toString(config.DATE_FORMAT_DISPLAY)}, {g['tipo']}, {g['ore']}h"
+                            )
 
                 file_processati += 1
             except Exception as e:
@@ -1002,13 +997,15 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.aggiorna_tabella_storico()
             self.salva_dati_su_file()
             self.calcola()
-            
+
             msg = f"Elaborati {file_processati} file. {ass_agg_totali} nuove assenze."
             if errori:
                 msg += f"\n\nErrore su: {', '.join(errori)}"
             QMessageBox.information(self, "Importazione", msg)
         elif errori:
-            QMessageBox.critical(self, "Errore", f"Nessun file elaborato correttamente.\nErrori su: {', '.join(errori)}")
+            QMessageBox.critical(
+                self, "Errore", f"Nessun file elaborato correttamente.\nErrori su: {', '.join(errori)}"
+            )
 
     def modifica_manuale_residui(self) -> None:
         val_f, ok1 = QInputDialog.getDouble(
@@ -1048,13 +1045,13 @@ class CalcolatoreFeriePAR(QMainWindow):
     def salva_dati_su_file(self) -> None:
         """Salva i dati su file con validazione e logging."""
         nominativo = self.txt_nominativo.text().strip()
-        
+
         # Validazione nominativo
         if not nominativo:
             QMessageBox.warning(self, "Errore", "Inserisci il nominativo del dipendente.")
             ui_logger.warning("Tentativo di salvataggio senza nominativo.")
             return
-        
+
         success, err = self.dm.salva(
             nominativo=nominativo,
             matricola=self.txt_matricola.text(),
@@ -1085,83 +1082,25 @@ class CalcolatoreFeriePAR(QMainWindow):
         if not file_path:
             return
 
-        r_f = self._ultimo_calc_ferie
-        r_p = self._ultimo_calc_par
-
-        def tr(label: str, r: Dict[str, float]) -> str:
-            return (f"<tr><td><b>{label}</b></td>"
-                    f"<td>{utils.format_ore_decimali(r.get('diritto', 0))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('res_ap_iniziale', r.get('res_ap', 0)))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('ap_scalato_totale', r.get('ap_scalato_anno_precedente', 0)))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('maturato', 0))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('goduto_tot', 0))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('res_ap_netto', 0))}</td>"
-                    f"<td class='s'>{utils.format_ore_decimali(r.get('saldo', 0))}</td>"
-                    f"<td>{utils.format_ore_decimali(r.get('presunto_fine_anno', 0))}</td></tr>")
-
-        storico_rows = []
+        righe_storico = []
         for item in self._assenze_effettive_e_programmate():
-            origine = item.get("origine", "Storico")
-            is_cal = self.dm.calendario.is_collettivo(item["data"])
-            if origine == "Calendario":
-                tipo_display = f"{item['tipo']} (Calendario)"
-            elif origine == "Programmata":
-                tipo_display = f"{item['tipo']} (Programmata)"
-            elif is_cal:
-                tipo_display = f"{item['tipo']} (Cal)"
-            else:
-                tipo_display = item["tipo"]
+            tipo_display, origine, _ = self._descrivi_assenza(item)
+            righe_storico.append((
+                item["data"].toString(config.DATE_FORMAT_DISPLAY),
+                tipo_display,
+                utils.format_ore_decimali(float(item["ore"])),
+                origine,
+            ))
 
-            storico_rows.append(
-                "<tr>"
-                f"<td>{html.escape(item['data'].toString(config.DATE_FORMAT_DISPLAY))}</td>"
-                f"<td>{html.escape(tipo_display)}</td>"
-                f"<td>{html.escape(utils.format_ore_decimali(float(item['ore'])))}</td>"
-                f"<td>{html.escape(origine)}</td>"
-                "</tr>"
-            )
-        if not storico_rows:
-            storico_rows.append('<tr><td colspan="4">Nessuna assenza registrata.</td></tr>')
-        storico_html = "\n".join(storico_rows)
-
-        dipendente = html.escape(self.txt_nominativo.text())
-        matricola = html.escape(self.txt_matricola.text())
-
-        html_doc = f"""<html><head><style>
-            body{{font-family:Arial,sans-serif;font-size:11pt;}}
-            h1{{color:#0078d7;font-size:18pt;}}
-            h3{{font-size:13pt;margin-top:15pt;margin-bottom:5pt;}}
-            p{{font-size:11pt;margin-top:2pt;margin-bottom:2pt;}}
-            table{{width:100%;border-collapse:collapse;margin-top:10pt;}}
-            th,td{{border:1px solid #ccc;padding:6pt;text-align:center;font-size:10pt;}}
-            th{{background-color:#f2f2f2;}}
-            .s{{font-weight:bold;}}
-            .small{{font-size:9pt;color:#555;}}
-        </style></head><body>
-            <h1>Report Ferie e PAR</h1>
-            <p><b>Data Report:</b> {date.today().strftime("%d/%m/%Y")}</p><hr>
-            <h3>Anagrafica</h3>
-            <p><b>Dipendente:</b> {dipendente}</p>
-            <p><b>Matricola:</b> {matricola}</p>
-            <p><b>Data Assunzione:</b> {html.escape(self.date_assunzione.text())}</p>
-            <br><h3>Dettaglio saldi</h3>
-            <p><b>Nota:</b> valori espressi in ore decimali. 3,5 h = 3 ore e mezza.</p>
-            <p><b>Programmazione:</b> le assenze personali future sono scalate prima dal Residuo AP; le date collettive restano scalate dai saldi dell'anno di competenza.</p>
-            <table>
-                <tr><th>Tipo</th><th>Diritto annuo</th><th>Residuo AP iniziale</th><th>AP usato totale</th>
-                    <th>Maturato ad oggi</th><th>Usato totale</th><th>Residuo AP rimasto</th><th>Disponibili oggi</th><th>Presunto fine anno</th></tr>
-                {tr("FERIE", r_f)}
-                {tr("PAR", r_p)}
-            </table>
-
-            <br><h3>Storico utilizzi completo</h3>
-            <table>
-                <tr><th>Data</th><th>Tipo</th><th>Ore</th><th>Origine</th></tr>
-                {storico_html}
-            </table>
-
-            <br><p class="small">Generato da Gestione Ferie/PAR v{config.APP_VERSION}</p>
-        </body></html>"""
+        html_doc = report.build_report_html(
+            app_version=config.APP_VERSION,
+            dipendente=self.txt_nominativo.text(),
+            matricola=self.txt_matricola.text(),
+            data_assunzione_display=self.date_assunzione.text(),
+            risultato_ferie=self._ultimo_calc_ferie,
+            risultato_par=self._ultimo_calc_par,
+            righe_storico=righe_storico,
+        )
 
         printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
@@ -1185,241 +1124,12 @@ class CalcolatoreFeriePAR(QMainWindow):
 
     def mostra_guida(self) -> None:
         """Mostra la guida utente completa con tutte le funzionalità del programma."""
-        html = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.5; }}
-                h1 {{ color: #0078d7; font-size: 16pt; }}
-                h2 {{ color: #333; font-size: 13pt; border-bottom: 1px solid #ccc; padding-bottom: 5px; }}
-                h3 {{ color: #555; font-size: 12pt; }}
-                .tip {{ background-color: #f0f8ff; padding: 8px; border-left: 3px solid #0078d7; margin: 10px 0; }}
-                .warning {{ background-color: #fff8f0; padding: 8px; border-left: 3px solid #ff9900; margin: 10px 0; }}
-                .version {{ font-style: italic; color: #666; text-align: right; }}
-            </style>
-        </head>
-        <body>
-            <h1>Gestione Ferie e PAR - Pro v{config.APP_VERSION}</h1>
-            <p><b>Autore:</b> Enrico Martini</p>
-            <p><b>Licenza:</b> MIT</p>
-            <p class="version">Manuale aggiornato alla versione {config.APP_VERSION}</p>
-            
-            <hr>
-            
-            <h2>📌 Introduzione</h2>
-            <p>
-                <b>Gestione Ferie/PAR - Pro</b> è un'applicazione desktop professionale per la gestione, 
-                il calcolo e il monitoraggio dei saldi di <b>Ferie</b> e <b>PAR (Permessi Art. 2109)</b>.
-                È stata sviluppata per semplificare la gestione delle assenze per i dipendenti, 
-                con particolare attenzione alle esigenze dei dipendenti Breton.
-            </p>
-            
-            <h2>🚀 Funzionalità Principali</h2>
-            
-            <h3>1. Anagrafica Dipendente</h3>
-            <p>
-                Inserisci i dati personali del dipendente:
-            </p>
-            <ul>
-                <li><b>Nominativo:</b> Nome e cognome del dipendente (obbligatorio).</li>
-                <li><b>Matricola:</b> Codice identificativo aziendale.</li>
-                <li><b>Data Assunzione:</b> Data di assunzione (utilizzata per calcolare l'anzianità).</li>
-                <li><b>S. Patrono:</b> Spunta la casella per includere i +8h del Santo Patrono.</li>
-            </ul>
-            <div class="tip">
-                <b>Suggerimento:</b> I dati vengono salvati automaticamente ogni volta che li modifichi.
-            </div>
-            
-            <h3>2. Calendario Ferie Collettive</h3>
-            <p>
-                Gestisce l'estrazione intelligente dei giorni di chiusura collettiva (Cal) dalle email aziendali.
-            </p>
-            <ul>
-                <li>Clicca sul pulsante <b>"Calendario Ferie"</b> per aprire la finestra di importazione.</li>
-                <li>Incolla il testo della mail ufficiale aziendale che contiene le date di chiusura.</li>
-                <li>Il programma <b>estrarra automaticamente</b> le date e le salverà.</li>
-                <li>Le date del calendario vengono <b>scalate automaticamente</b> dai saldi come giornate intere da 8h.</li>
-            </ul>
-            <div class="tip">
-                <b>Formati supportati:</b> Testo libero con date in formato "gg/mm/aaaa", "dal gg al gg mese aa", 
-                o elenchi di date. Il programma riconosce anche i tipi "FERIE" e "PAR".
-            </div>
-            
-            <h3>3. Importazione Buste Paga (PDF Zucchetti)</h3>
-            <p>
-                Estrae automaticamente i Residui Anno Precedente (AP) e lo storico delle giornate 
-                direttamente dai cedolini in formato PDF Zucchetti.
-            </p>
-            <ul>
-                <li>Clicca sul pulsante <b>"Carica Buste Paga"</b>.</li>
-                <li>Seleziona uno o più file PDF (o TXT) contenenti le buste paga.</li>
-                <li>Il programma estrae:
-                    <ul>
-                        <li>Residuo AP Ferie e PAR.</li>
-                        <li>Storico delle giornate godute nel mese (con data, tipo e ore).</li>
-                    </ul>
-                </li>
-                <li>Le assenze vengono aggiunte allo storico esistente (senza duplicati).</li>
-            </ul>
-            <div class="warning">
-                <b>Attenzione:</b> Se la libreria <b>pypdf</b> non è installata, il pulsante sarà disabilitato. 
-                Installa con: <code>pip install pypdf</code>
-            </div>
-            
-            <h3>4. Registrazione Manuale Assenze</h3>
-            <p>
-                Inserisci manualmente le assenze se non sono disponibili in formato digitale.
-            </p>
-            <ul>
-                <li><b>Data:</b> Seleziona la data dell'assenza. Può essere anche futura: in quel caso viene indicata come <b>Programmata</b>.</li>
-                <li><b>Periodo:</b> Spunta "Abilita Periodo" per inserire più giorni consecutivi.</li>
-                <li><b>Tipo:</b> Seleziona <b>FERIE</b> o <b>PAR</b>.</li>
-                <li><b>Ore:</b> Inserisci il numero di ore (massimo 8h/giorno). 
-                    Se spunti "Giornata Intera", vengono inserite automaticamente 8h.</li>
-                </li>
-                <li>Clicca su <b>"Inserisci"</b> per aggiungere l'assenza.</li>
-            </ul>
-            <div class="tip">
-                <b>Suggerimento:</b> Non puoi superare le 8 ore al giorno. Il programma avviserà in caso di errore.
-            </div>
-            
-            <h3>5. Storico Utilizzi</h3>
-            <p>
-                Visualizza e gestisci lo storico delle assenze registrate.
-            </p>
-            <ul>
-                <li>La tabella mostra <b>Data</b>, <b>Tipo</b> e <b>Ore</b> per ogni assenza.</li>
-                <li>Le assenze personali future sono evidenziate con la scritta <b>(Programmata)</b>.</li>
-                <li>Le assenze importate dal calendario sono evidenziate con lo sfondo giallo e la scritta <b>(Cal)</b>.</li>
-                <li>Puoi <b>filtrare per anno</b> usando il menu a tendina in alto.</li>
-                <li>Per <b>rimuovere</b> un'assenza, selezionala e premi <b>"Rimuovi Selezionati"</b> o il tasto <b>Canc</b>.</li>
-                <li>Puoi <b>esportare lo storico in CSV</b> cliccando sul pulsante dedicato.</li>
-            </ul>
-            
-            <h3>6. Saldi e Ore Disponibili</h3>
-            <p>
-                Visualizza i saldi aggiornati di Ferie e PAR in tempo reale.
-            </p>
-            <ul>
-                <li><b>Diritto annuo:</b> Ore totali maturabili in un anno (160h + bonus anzianità).</li>
-                <li><b>Residuo AP iniziale:</b> Residuo Anno Precedente inserito manualmente o importato da busta paga.</li>
-                <li><b>AP usato totale:</b> Ore di Residuo AP già consumate, comprese le assenze personali future programmate che prenotano il Residuo AP prima del maturato corrente.</li>
-                <li><b>Maturato ad oggi:</b> Ore maturate nell'anno corrente.</li>
-                <li><b>Usato totale:</b> Ore totali utilizzate (normali + calendario).</li>
-                <li><b>Residuo AP rimasto:</b> Residuo AP ancora disponibile.</li>
-                <li><b>Disponibili oggi:</b> Ore totali disponibili (Residuo AP + Maturato).</li>
-                <li><b>Presunto fine anno:</b> Stima delle ore disponibili a fine anno.</li>
-            </ul>
-            <div class="tip">
-                <b>Metodo di calcolo:</b> Il programma usa un algoritmo <b>FIFO avanzato</b> che scala 
-                prima il Residuo AP e poi il Maturato corrente.
-            </div>
-            <div class="warning">
-                <b>Attenzione:</b> Se il saldo diventa negativo, verrai avvisato con un messaggio in rosso.
-            </div>
-            
-            <h3>7. Esportazione Report PDF</h3>
-            <p>
-                Genera un report completo in formato PDF con tutti i dati.
-            </p>
-            <ul>
-                <li>Clicca sul pulsante <b>"Esporta in PDF"</b> o usa la scorciatoia <b>Ctrl+P</b>.</li>
-                <li>Il report include:
-                    <ul>
-                        <li>Dati anagrafici del dipendente.</li>
-                        <li>Dettaglio dei saldi (Ferie e PAR).</li>
-                        <li>Storico completo delle assenze.</li>
-                    </ul>
-                </li>
-                <li>Puoi salvare il file con il nome che preferisci.</li>
-            </ul>
-            
-            <h3>8. Salvataggio e Backup</h3>
-            <p>
-                I dati vengono salvati automaticamente in un file locale.
-            </p>
-            <ul>
-                <li><b>Formato:</b> JSON (o SQLite se configurato).</li>
-                <li><b>Percorso:</b> <code>%APPDATA%\\\\FeParManager\\\\dati_ferie_par.json</code> (Windows) 
-                    o <code>~/.local/share/FeParManager/dati_ferie_par.json</code> (Linux).</li>
-                <li><b>Backup:</b> Viene creato automaticamente un backup (<code>.bak</code>) prima di ogni salvataggio.</li>
-                <li><b>Crittografia:</b> Se impostata una password, i dati vengono cifrati con <b>AES-256</b>.</li>
-            </ul>
-            <div class="tip">
-                <b>Suggerimento:</b> Puoi esportare il database completo dal menu <b>File &gt; Salva database come...</b>.
-            </div>
-            
-            <h3>9. Aggiornamenti Automatici</h3>
-            <p>
-                Il programma verifica automaticamente la disponibilità di aggiornamenti.
-            </p>
-            <ul>
-                <li><b>Controllo all'avvio:</b> Dopo 2 secondi dall'avvio, il programma verifica se c'è una nuova versione.</li>
-                <li><b>Notifica:</b> Se è disponibile un aggiornamento, viene mostrata una finestra con:
-                    <ul>
-                        <li>La versione disponibile.</li>
-                        <li>La versione attuale.</li>
-                        <li>Pulsante <b>"Scarica Ora"</b> per aprire la pagina di download.</li>
-                        <li>Pulsante <b>"Più Tardi"</b> per chiudere la notifica.</li>
-                    </ul>
-                </li>
-                <li><b>Controllo manuale:</b> Puoi verificare gli aggiornamenti in qualsiasi momento 
-                    dal menu <b>Aiuto &gt; Controlla Aggiornamenti</b>.</li>
-            </ul>
-            
-            <h2>⌨️ Scorciatoie da Tastiera</h2>
-            <table border="1" cellpadding="5" style="border-collapse: collapse; margin: 10px 0;">
-                <tr>
-                    <th>Scorciatoia</th>
-                    <th>Azione</th>
-                </tr>
-                <tr>
-                    <td><b>Ctrl + S</b></td>
-                    <td>Salva i dati</td>
-                </tr>
-                <tr>
-                    <td><b>Ctrl + P</b></td>
-                    <td>Esporta report PDF</td>
-                </tr>
-                <tr>
-                    <td><b>Canc / Delete</b></td>
-                    <td>Rimuovi assenze selezionate</td>
-                </tr>
-            </table>
-            
-            <h2>🔧 Requisiti di Sistema</h2>
-            <ul>
-                <li><b>Python:</b> 3.8 o superiore.</li>
-                <li><b>Librerie obbligatorie:</b>
-                    <ul>
-                        <li><code>PyQt6</code> (interfaccia grafica).</li>
-                        <li><code>pypdf</code> (importazione PDF, opzionale).</li>
-                        <li><code>cryptography</code> (crittografia, opzionale).</li>
-                    </ul>
-                </li>
-                <li><b>Installazione:</b> <code>pip install -r requirements.txt</code></li>
-            </ul>
-            
-            <h2>📄 Licenza</h2>
-            <p>
-                Questo software è distribuito sotto licenza <b>MIT</b>. 
-                Puoi liberamente usare, modificare e distribuire il programma, 
-                purché venga inclusa la licenza originale.
-            </p>
-            
-            <hr>
-            <p style="text-align: center; color: #666;">
-                <b>Grazie per aver scelto Gestione Ferie/PAR - Pro!</b>
-            </p>
-        </body>
-        </html>
-        """
         dlg = QDialog(self)
         dlg.setWindowTitle("Guida Utente - Gestione Ferie/PAR")
         dlg.resize(700, 600)
         lay = QVBoxLayout(dlg)
         tb = QTextBrowser()
-        tb.setHtml(html)
+        tb.setHtml(report.build_guida_html(config.APP_VERSION))
         tb.setOpenExternalLinks(True)  # Permette di aprire link esterni
         lay.addWidget(tb)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

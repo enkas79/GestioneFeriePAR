@@ -6,6 +6,18 @@ import pytest
 from datetime import date
 from unittest.mock import MagicMock
 
+import config
+from models import (
+    CalcolatoreLogica,
+    CalendarManager,
+    DataManager,
+    EncryptionManager,
+    BustaPageParser,
+    HAS_PYPDF,
+    HAS_CRYPTOGRAPHY,
+)
+
+
 # Mock per QDate (per evitare dipendenza da PyQt6 nei test)
 def create_mock_qdate(year, month, day, day_of_week=None):
     """Crea un mock di QDate con i metodi necessari."""
@@ -21,22 +33,6 @@ def create_mock_qdate(year, month, day, day_of_week=None):
     mock.__le__ = MagicMock(side_effect=lambda other: (year, month, day) <= (other.year(), other.month(), other.day()))
     mock.__eq__ = MagicMock(side_effect=lambda other: (year, month, day) == (other.year(), other.month(), other.day()))
     return mock
-
-# Crea un mock per QDate
-QDate = MagicMock()
-QDate.fromString = MagicMock(side_effect=lambda s, fmt: create_mock_qdate(2023, 1, 1))
-QDate.currentDate = MagicMock(return_value=create_mock_qdate(date.today().year, date.today().month, date.today().day))
-
-from models import (
-    CalcolatoreLogica,
-    CalendarManager,
-    DataManager,
-    EncryptionManager,
-    BustaPageParser,
-    HAS_PYPDF,
-    HAS_CRYPTOGRAPHY,
-)
-import config
 
 
 class TestCalcolatoreLogica:
@@ -166,7 +162,7 @@ class TestCalendarManager:
         qdate_25 = create_mock_qdate(2023, 4, 25)
         qdate_25.toString = MagicMock(return_value="2023-04-25")
         assert cm.is_collettivo(qdate_25) is True
-        
+
         qdate_26 = create_mock_qdate(2023, 4, 26)
         qdate_26.toString = MagicMock(return_value="2023-04-26")
         assert cm.is_collettivo(qdate_26) is False
@@ -180,21 +176,21 @@ class TestEncryptionManager:
         """Test crittografia e decrittografia."""
         password = "test_password_123"
         em = EncryptionManager(password)
-        
+
         data = '{"test": "data", "value": 42}'
         encrypted = em.encrypt(data)
         decrypted = em.decrypt(encrypted)
-        
+
         assert decrypted == data
 
     def test_encrypt_decrypt_different_password(self):
         """Test che password diverse non decifrano lo stesso dato."""
         em1 = EncryptionManager("password1")
         em2 = EncryptionManager("password2")
-        
+
         data = '{"test": "data"}'
         encrypted = em1.encrypt(data)
-        
+
         with pytest.raises(Exception):
             em2.decrypt(encrypted)
 
@@ -202,16 +198,16 @@ class TestEncryptionManager:
         """Test verifica se un file è cifrato."""
         import tempfile
         import os
-        
+
         password = "test_password"
         em = EncryptionManager(password)
-        
+
         # Crea un file cifrato temporaneo
         with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
             encrypted_data = em.encrypt('{"test": "data"}')
             f.write(encrypted_data)
             temp_path = f.name
-        
+
         try:
             assert EncryptionManager.is_encrypted(temp_path) is True
         finally:
@@ -221,12 +217,12 @@ class TestEncryptionManager:
         """Test verifica se un file JSON non è cifrato."""
         import tempfile
         import os
-        
+
         # Crea un file JSON temporaneo
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
             f.write('{"test": "data"}')
             temp_path = f.name
-        
+
         try:
             assert EncryptionManager.is_encrypted(temp_path) is False
         finally:
@@ -252,9 +248,9 @@ class TestDataManager:
         dm.nominativo = "Mario Rossi"
         dm.res_ap_ferie = 40.0
         dm.storico_assenze.append({"data": create_mock_qdate(2023, 1, 1), "tipo": "FERIE", "ore": 8.0})
-        
+
         dm.reset()
-        
+
         assert dm.nominativo == ""
         assert dm.res_ap_ferie == 0.0
         assert len(dm.storico_assenze) == 0
@@ -266,9 +262,9 @@ class TestDataManager:
         dm.matricola = "12345"
         dm.res_ap_ferie = 40.0
         dm.res_ap_par = 20.0
-        
+
         payload = dm._crea_payload()
-        
+
         assert payload["nominativo"] == "Mario Rossi"
         assert payload["matricola"] == "12345"
         assert payload["res_ap_ferie_start"] == 40.0
@@ -286,9 +282,9 @@ class TestDataManager:
             "storico_assenze": [],
             "testo_mail_calendario": "",
         }
-        
+
         dm._applica_payload(payload)
-        
+
         assert dm.nominativo == "Mario Rossi"
         assert dm.matricola == "12345"
         assert dm.res_ap_ferie == 40.0
@@ -300,10 +296,10 @@ class TestDataManager:
         dm = DataManager()
         dm.res_ap_ferie = 40.0
         dm.res_ap_par = 20.0
-        
+
         oggi = date(2023, 6, 15)
         risultati = dm.calcola_saldi(sample_assunzione, True, oggi=oggi)
-        
+
         assert "ferie" in risultati
         assert "par" in risultati
         assert "saldo" in risultati["ferie"]
@@ -318,7 +314,7 @@ class TestBustaPageParser:
         """Test parsing di testo vuoto."""
         parser = BustaPageParser()
         risultato = parser.parse("")
-        
+
         assert risultato["ferie"] is None
         assert risultato["par"] is None
         assert risultato["mese"] is None
@@ -329,7 +325,7 @@ class TestBustaPageParser:
         parser = BustaPageParser()
         testo = "FERIE Res.AP 40,00"
         risultato = parser.parse(testo)
-        
+
         assert risultato["ferie"] is not None
         assert risultato["ferie"]["res_ap"] == 40.0
 
@@ -338,7 +334,7 @@ class TestBustaPageParser:
         parser = BustaPageParser()
         testo = "P.A.R. Res.AP 20,00"
         risultato = parser.parse(testo)
-        
+
         assert risultato["par"] is not None
         assert risultato["par"]["res_ap"] == 20.0
 
@@ -347,7 +343,7 @@ class TestBustaPageParser:
         parser = BustaPageParser()
         testo = "MAGGIO 2023"
         risultato = parser.parse(testo)
-        
+
         assert risultato["mese"] == 5
         assert risultato["anno"] == 2023
         assert risultato["mese_str"] == "Maggio"
@@ -358,7 +354,7 @@ class TestBustaPageParser:
         # Simula un testo di busta paga con mese/anno
         testo = "MAGGIO 2023\n10  F 132   8,00\n15  P 134   4,00"
         risultato = parser.parse(testo)
-        
+
         # Verifica che siano state parse almeno le informazioni di base
         assert risultato["mese"] == 5
         assert risultato["anno"] == 2023

@@ -122,8 +122,8 @@ def is_giorno_festivo(dq: QDate) -> bool:
     g = (b - f + 1) // 3
     h = (19 * a + b - d - g + 15) % 30
     i, k = c // 4, c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    mp = (h + l - 7 * m + 114) // 31
-    dp = ((h + l - 7 * m + 114) % 31) + 1
+    l_val = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_val) // 451
+    mp = (h + l_val - 7 * m + 114) // 31
+    dp = ((h + l_val - 7 * m + 114) % 31) + 1
     return dq == QDate(year, mp, dp).addDays(1)

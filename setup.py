@@ -50,6 +50,7 @@ setup(
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
             "pytest-qt>=4.0.0",
+            "ruff>=0.6.0",
         ],
     },
     entry_points={

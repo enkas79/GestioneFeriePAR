@@ -1,0 +1,7 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# E: pycodestyle errori, F: pyflakes, W: warning pycodestyle
+select = ["E", "F", "W"]

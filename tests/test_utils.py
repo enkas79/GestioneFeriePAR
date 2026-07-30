@@ -3,7 +3,6 @@ Test per le funzioni di utilità in utils.py.
 """
 
 import pytest
-from datetime import date
 
 # Importa il mock per QDate
 from mock_pyqt6 import MockQDate
