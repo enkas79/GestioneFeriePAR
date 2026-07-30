@@ -190,6 +190,14 @@ class CalcolatoreFeriePAR(QMainWindow):
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #333; }
             QLabel { font-size: 13px; color: #333; }
             QCheckBox { font-size: 13px; color: #333; }
+            QCheckBox::indicator {
+                width: 15px; height: 15px;
+                border: 1px solid #999; border-radius: 3px;
+                background-color: white; }
+            QCheckBox::indicator:hover { border: 1px solid #0078d7; }
+            QCheckBox::indicator:checked {
+                background-color: #0078d7; border: 1px solid #0078d7; }
+            QCheckBox::indicator:disabled { background-color: #e9ecef; border: 1px solid #ccc; }
             QLineEdit, QDateEdit, QDoubleSpinBox, QComboBox, QTextEdit {
                 background-color: white; color: #1f2937;
                 padding: 6px; border: 1px solid #ccc; border-radius: 4px;
@@ -226,12 +234,19 @@ class CalcolatoreFeriePAR(QMainWindow):
                 alternate-background-color: #f6f8fb;
             }
             QTableWidget#tab_saldi::item { padding: 8px 6px; }
+            QHeaderView {
+                background-color: #eef2f7;
+            }
             QHeaderView::section {
                 background-color: #eef2f7;
                 padding: 6px;
                 border: 1px solid #d0d7e2;
                 font-weight: bold;
                 color: #263445;
+            }
+            QTableCornerButton::section {
+                background-color: #eef2f7;
+                border: 1px solid #d0d7e2;
             }
             QMenuBar { background-color: #e0e0e0; font-size: 14px; }
             QMenuBar::item:selected { background-color: #ccc; }
@@ -414,12 +429,12 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         btn_calendario = QPushButton("Calendario Ferie")
         btn_calendario.setObjectName("btn_calendario")
-        btn_calendario.setFixedWidth(140)
+        btn_calendario.setMinimumWidth(160)
         btn_calendario.setToolTip("Incolla l'estratto della mail aziendale.")
         btn_calendario.clicked.connect(self.apri_dialog_calendario)
 
         btn_import = QPushButton("Carica Buste Paga")
-        btn_import.setFixedWidth(140)
+        btn_import.setMinimumWidth(160)
         btn_import.clicked.connect(self.importa_busta_paga)
 
         grid.addWidget(QLabel("Dipendente:"), 0, 0, Qt.AlignmentFlag.AlignRight)
@@ -497,7 +512,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.spin_ore.setMaximumWidth(150)
 
         btn_add = QPushButton("Inserisci")
-        btn_add.setFixedWidth(140)
+        btn_add.setMinimumWidth(140)
         btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.clicked.connect(self.aggiungi_assenza)
 
@@ -542,7 +557,7 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         btn_csv = QPushButton("Esporta CSV")
         btn_csv.setObjectName("btn_csv")
-        btn_csv.setFixedWidth(120)
+        btn_csv.setMinimumWidth(120)
         btn_csv.clicked.connect(self.esporta_csv)
 
         hbox_btn.addWidget(btn_rimuovi)
@@ -560,7 +575,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         lbl_fifo.setStyleSheet("color: #666; font-style: italic;")
         btn_edit = QPushButton("Modifica Manuale Res.AP")
         btn_edit.setObjectName("btn_edit_res")
-        btn_edit.setFixedWidth(165)
+        btn_edit.setMinimumWidth(175)
         btn_edit.clicked.connect(self.modifica_manuale_residui)
         hbox_hdr.addWidget(lbl_fifo)
         hbox_hdr.addStretch()
@@ -625,16 +640,16 @@ class CalcolatoreFeriePAR(QMainWindow):
         btn_stampa = QPushButton("Esporta in PDF  (Ctrl+P)")
         btn_stampa.setObjectName("btn_stampa")
         btn_stampa.clicked.connect(self.stampa_report)
-        btn_stampa.setFixedWidth(190)
+        btn_stampa.setMinimumWidth(220)
 
         btn_salva = QPushButton("Salva Dati  (Ctrl+S)")
         btn_salva.clicked.connect(self.azione_salva_manuale)
-        btn_salva.setFixedWidth(165)
+        btn_salva.setMinimumWidth(185)
 
         btn_esci = QPushButton("Esci")
         btn_esci.setObjectName("btn_esci")
         btn_esci.clicked.connect(self.close)
-        btn_esci.setFixedWidth(100)
+        btn_esci.setMinimumWidth(100)
 
         hbox.addWidget(btn_stampa)
         hbox.addSpacing(10)
