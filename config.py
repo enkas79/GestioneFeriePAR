@@ -15,7 +15,7 @@ try:
     with open(os.path.join(os.path.dirname(__file__), "version.txt"), "r") as f:
         APP_VERSION = f.read().strip()
 except Exception:
-    APP_VERSION = "2.3.10"  # Fallback se version.txt non esiste
+    APP_VERSION = "2.4.0"  # Fallback se version.txt non esiste
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "enkas79")
@@ -23,6 +23,17 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "GestioneFeriePAR")
 
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+
+# --- ICONA APPLICAZIONE ---
+# Risolve icon.ico sia in esecuzione da sorgente sia da eseguibile PyInstaller
+# (dove non esiste __file__ utilizzabile: le risorse stanno accanto all'exe).
+def _get_icon_path() -> str:
+    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
+    path = os.path.join(base, "icon.ico")
+    return path if os.path.exists(path) else ""
+
+
+ICON_PATH = _get_icon_path()
 
 # --- PERCORSI E FILE ---
 # Percorsi di salvataggio (cartella dati applicativa dell'utente, per piattaforma):
