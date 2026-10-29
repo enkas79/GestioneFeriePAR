@@ -6,7 +6,7 @@ Costruisce la finestra grafica utilizzando le classi di PyQt6.
 import os
 import logging
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QDateEdit, QDoubleSpinBox,
@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QAbstractItemView, QLineEdit, QFileDialog, QInputDialog,
                              QGridLayout, QDialog, QTextBrowser,
                              QDialogButtonBox, QProgressBar, QProgressDialog)
-from PyQt6.QtCore import Qt, QDate, QUrl
+from PyQt6.QtCore import Qt, QDate, QUrl, QThread, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QAction, QTextDocument, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtPrintSupport import QPrinter
 
@@ -27,6 +27,29 @@ from models import DataManager, BustaPageParser, CalcolatoreLogica, HAS_PYPDF, U
 
 # Configura logging per la UI
 ui_logger = logging.getLogger("ui")
+
+
+class _UpdateWorker(QObject):
+    """Esegue il controllo aggiornamenti in un thread separato dal main thread GUI."""
+    finito = pyqtSignal(bool, str, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.thread = QThread()
+        self.moveToThread(self.thread)
+        self.thread.started.connect(self._esegui)
+        self.finito.connect(self._ferma_thread)
+
+    def avvia(self) -> None:
+        self.thread.start()
+
+    def _esegui(self) -> None:
+        has_update, latest_ver, url = UpdateManager.check_for_updates()
+        self.finito.emit(has_update, latest_ver, url)
+
+    def _ferma_thread(self) -> None:
+        self.thread.quit()
+        self.thread.wait()
 
 
 class CalcolatoreFeriePAR(QMainWindow):
@@ -46,9 +69,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.parser = BustaPageParser()
         self.calc = CalcolatoreLogica()
 
-        mesi_nomi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
-                     "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
-        self.mese_busta = mesi_nomi[date.today().month - 1]
+        self.mese_busta = config.MESI_NOMI_IT[date.today().month - 1]
         self.anno_busta = date.today().year
 
         self._ultimo_calc_ferie: Dict[str, float] = {}
@@ -110,23 +131,25 @@ class CalcolatoreFeriePAR(QMainWindow):
             ui_logger.warning("cryptography non installato. La crittografia è disabilitata.")
 
     def _check_updates_on_startup(self) -> None:
-        """Controlla aggiornamenti all'avvio in background e mostra notifica se disponibile."""
-        from models import UpdateManager
+        """Controlla aggiornamenti all'avvio in background (thread separato) e mostra notifica se disponibile."""
         from PyQt6.QtCore import QTimer
 
-        def check_updates():
-            """Esegue il controllo aggiornamenti in un thread separato per non bloccare la UI."""
+        def avvia_worker():
             try:
-                has_update, latest_ver, url = UpdateManager.check_for_updates()
-                if has_update:
-                    ui_logger.info(f"Aggiornamento disponibile: {latest_ver}")
-                    # Mostra notifica all'utente
-                    self._show_update_notification(latest_ver, url)
+                self._update_worker = _UpdateWorker()
+                self._update_worker.finito.connect(self._on_update_check_finito)
+                self._update_worker.avvia()
             except Exception as e:
                 ui_logger.error(f"Errore controllo aggiornamenti all'avvio: {e}")
 
         # Esegue il controllo dopo 2 secondi per non rallentare l'avvio
-        QTimer.singleShot(2000, check_updates)
+        QTimer.singleShot(2000, avvia_worker)
+
+    def _on_update_check_finito(self, has_update: bool, latest_ver: str, url: str) -> None:
+        """Callback del worker di aggiornamento: executed nel main thread via segnale."""
+        if has_update:
+            ui_logger.info(f"Aggiornamento disponibile: {latest_ver}")
+            self._show_update_notification(latest_ver, url)
 
     def _show_update_notification(self, latest_version: str, url: str) -> None:
         """Mostra una notifica che un aggiornamento è disponibile."""
@@ -307,9 +330,13 @@ class CalcolatoreFeriePAR(QMainWindow):
         help_menu.addAction(a_info)
 
     def controlla_aggiornamenti(self) -> None:
-        """Controlla se esiste una versione più recente su GitHub."""
-        has_update, latest_ver, url = UpdateManager.check_for_updates()
+        """Controlla se esiste una versione più recente su GitHub (in thread separato)."""
+        self._update_worker = _UpdateWorker()
+        self._update_worker.finito.connect(self._on_update_manual_finito)
+        self._update_worker.avvia()
 
+    def _on_update_manual_finito(self, has_update: bool, latest_ver: str, url: str) -> None:
+        """Risultato del controllo aggiornamenti manuale, eseguito nel main thread."""
         if has_update:
             risposta = QMessageBox.question(
                 self, "Aggiornamento Disponibile",
@@ -410,15 +437,20 @@ class CalcolatoreFeriePAR(QMainWindow):
         grid.setSpacing(10)
         grid.setContentsMargins(10, 15, 10, 10)
 
+        self._timer_salvataggio = QTimer(self)
+        self._timer_salvataggio.setSingleShot(True)
+        self._timer_salvataggio.setInterval(800)
+        self._timer_salvataggio.timeout.connect(self.salva_dati_su_file)
+
         self.txt_matricola = QLineEdit()
         self.txt_matricola.setPlaceholderText("Matr.")
         self.txt_matricola.setFixedWidth(80)
-        self.txt_matricola.textChanged.connect(self.salva_dati_su_file)
+        self.txt_matricola.textChanged.connect(self._programma_salvataggio)
 
         self.txt_nominativo = QLineEdit()
         self.txt_nominativo.setPlaceholderText("Inserisci Nome e Cognome")
         self.txt_nominativo.setFixedWidth(200)
-        self.txt_nominativo.textChanged.connect(self.salva_dati_su_file)
+        self.txt_nominativo.textChanged.connect(self._programma_salvataggio)
 
         self.date_assunzione = QDateEdit()
         self.date_assunzione.setDisplayFormat(config.DATE_FORMAT_DISPLAY)
@@ -695,8 +727,7 @@ class CalcolatoreFeriePAR(QMainWindow):
 
     def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
         """Unisce storico reale e calendario collettivo, evitando doppi conteggi."""
-        # Usa il metodo di DataManager per centralizzare la logica
-        return self.dm._assenze_effettive_e_programmate()
+        return self.dm.assenze_effettive_e_programmate()
 
     def _descrivi_assenza(self, item: Dict[str, Any]) -> Tuple[str, str, bool]:
         """Deduce (tipo_display, origine, is_cal) per una riga di storico/calendario.
@@ -754,8 +785,21 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.tab_storico.setItem(row, 1, it_tipo)
             self.tab_storico.setItem(row, 2, it_ore)
 
-    def _verifica_limite_ore(self, data_target: QDate, ore_nuove: float) -> Tuple[bool, float]:
-        ore_p = sum(a["ore"] for a in self.dm.storico_assenze if a["data"] == data_target)
+    def _mappa_ore_per_data(self) -> Dict[str, float]:
+        """Costruisce una mappa data ISO -> ore gia' inserite (O(n) una sola volta)."""
+        mappa: Dict[str, float] = {}
+        for a in self.dm.storico_assenze:
+            chiave = a["data"].toString(config.DATE_FORMAT_INTERNAL)
+            mappa[chiave] = mappa.get(chiave, 0.0) + a["ore"]
+        return mappa
+
+    def _verifica_limite_ore(
+        self, data_target: QDate, ore_nuove: float,
+        mappa_ore: Optional[Dict[str, float]] = None
+    ) -> Tuple[bool, float]:
+        if mappa_ore is None:
+            mappa_ore = self._mappa_ore_per_data()
+        ore_p = mappa_ore.get(data_target.toString(config.DATE_FORMAT_INTERNAL), 0.0)
         return (ore_p + ore_nuove <= config.MAX_ORE_GIORNALIERE + 0.001), ore_p
 
     def aggiungi_assenza(self) -> None:
@@ -785,12 +829,15 @@ class CalcolatoreFeriePAR(QMainWindow):
                 ui_logger.warning("Data di fine precedente alla data di inizio.")
                 return
 
+            mappa_ore = self._mappa_ore_per_data()
             curr, inseriti = start, 0
             while curr <= end:
                 if not utils.is_giorno_festivo(curr):
-                    ok, _ = self._verifica_limite_ore(curr, ore)
+                    ok, _ = self._verifica_limite_ore(curr, ore, mappa_ore)
                     if ok:
                         self.dm.storico_assenze.append({"data": curr, "tipo": tipo, "ore": ore})
+                        chiave = curr.toString(config.DATE_FORMAT_INTERNAL)
+                        mappa_ore[chiave] = mappa_ore.get(chiave, 0.0) + ore
                         inseriti += 1
                         ui_logger.info(f"Aggiunta assenza: {curr.toString(config.DATE_FORMAT_DISPLAY)}, {tipo}, {ore}h")
                 curr = curr.addDays(1)
@@ -1066,6 +1113,11 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.salva_dati_su_file()
         self.calcola()
 
+    def _programma_salvataggio(self) -> None:
+        """Ritarda il salvataggio di 800ms dall'ultimo tasto: evita una scrittura
+        su disco (e un PBKDF2 a 480k iterazioni se cifrato) per ogni carattere."""
+        self._timer_salvataggio.start()
+
     def salva_dati_su_file(self) -> None:
         """Salva i dati su file con validazione e logging."""
         nominativo = self.txt_nominativo.text().strip()
@@ -1131,7 +1183,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         printer.setOutputFileName(file_path)
         doc = QTextDocument()
         doc.setHtml(html_doc)
-        doc.print(printer)
+        doc.print_(printer)
         QMessageBox.information(self, "Esportazione PDF", f"PDF salvato:\n{file_path}")
 
     def mostra_info(self) -> None:

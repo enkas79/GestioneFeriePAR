@@ -12,10 +12,15 @@ import config
 # Importa l'interfaccia utente dal modulo dedicato
 from ui import CalcolatoreFeriePAR
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point dell'applicazione (usato anche dallo script gui_scripts di setup.py)."""
     app = QApplication(sys.argv)
     if config.ICON_PATH:
         app.setWindowIcon(QIcon(config.ICON_PATH))
     window = CalcolatoreFeriePAR()
     window.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

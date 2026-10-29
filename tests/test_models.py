@@ -359,3 +359,89 @@ class TestBustaPageParser:
         assert risultato["mese"] == 5
         assert risultato["anno"] == 2023
         # Note: Il parsing delle giornate dipende da QDate, che è mockato
+
+
+class TestUpdateManagerParseVersion:
+    """Test per il confronto versioni normalizzato di UpdateManager."""
+
+    def _run_check(self, tag_name):
+        import json as _json
+        from unittest.mock import patch, MagicMock
+        from models import UpdateManager
+        payload = _json.dumps({"tag_name": tag_name, "html_url": "http://x"}).encode()
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = payload
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with patch("urllib.request.urlopen", return_value=resp):
+            return UpdateManager.check_for_updates()
+
+    def test_versione_uguale_non_aggiorna(self):
+        has_update, ver, _ = self._run_check("v2.5.0")
+        assert has_update is False
+
+    def test_versione_maggiore_aggiorna(self):
+        has_update, ver, _ = self._run_check("v2.5.1")
+        assert has_update is True
+        assert ver == "v2.5.1"
+
+    def test_versione_minore_piu_corta_non_falsa_positiva(self):
+        # "v2.6" deve essere considerata > "2.5.0" (prima (2,6) < (2,5,0) era falso)
+        has_update, _, _ = self._run_check("v2.6")
+        assert has_update is True
+
+
+class TestCalcolatoreLogicaDataRiferimento:
+    """Test deterministici per calcola_spettanze con data_riferimento."""
+
+    def test_spettanze_con_data_riferimento_fissa(self):
+        from datetime import date as _date
+        sp_f, sp_p = CalcolatoreLogica.calcola_spettanze(
+            _date(2018, 1, 1), True, data_riferimento=_date(2023, 6, 15)
+        )
+        assert sp_f == 168.0
+        assert sp_p == 104.0
+
+    def test_spettanze_18_anni_con_data_riferimento(self):
+        from datetime import date as _date
+        # Anzianita' misurata dal 1/1/2008: al 2030 sono 22 anni -> bonus 40h
+        sp_f, _ = CalcolatoreLogica.calcola_spettanze(
+            _date(2000, 1, 1), False, data_riferimento=_date(2030, 1, 1)
+        )
+        assert sp_f == 200.0
+
+
+class TestDataManagerExport:
+    """Test per esporta_csv e salvataggio atomico."""
+
+    def test_esporta_csv_formato_italiano(self, tmp_path):
+        dm = DataManager()
+        dm.nominativo = "Mario Rossi"
+        dm.storico_assenze.append({"data": create_mock_qdate(2023, 1, 10), "tipo": "FERIE", "ore": 3.5})
+        path = str(tmp_path / "out.csv")
+        assert dm.esporta_csv(path) is True
+        contenuto = open(path, encoding='utf-8').read()
+        assert contenuto.splitlines()[0] == "Data;Tipo;Ore;Info"
+        assert "3,50" in contenuto
+
+    def test_salva_su_file_atomico(self, tmp_path):
+        import os
+        dm = DataManager()
+        path = str(tmp_path / "db.json")
+        ok, err = dm.salva_su_file(path)
+        assert ok is True, err
+        import json
+        with open(path, encoding='utf-8') as f:
+            payload = json.load(f)
+        assert payload["versione_app"] == config.APP_VERSION
+        # Nessun file temporaneo residuo dopo scrittura atomica
+        residui = [f for f in os.listdir(tmp_path) if f.startswith('.tmp_')]
+        assert residui == []
+
+    def test_assenze_effettive_e_programmate_pubblico(self):
+        dm = DataManager()
+        dm.storico_assenze.append({"data": create_mock_qdate(2023, 1, 10), "tipo": "FERIE", "ore": 8.0})
+        righe = dm.assenze_effettive_e_programmate()
+        assert len(righe) == 1
+        assert righe[0]["origine"] in ("Storico", "Programmata")

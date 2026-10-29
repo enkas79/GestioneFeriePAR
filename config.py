@@ -72,6 +72,26 @@ MAX_BACKUP_COUNT = 3  # numero di backup rotanti mantenuti (.bak, .bak.1, .bak.2
 # --- REGOLE DI BUSINESS ---
 MAX_ORE_GIORNALIERE = 8.0
 
+# Spettanze annue base (ore) e bonus per anzianita'
+SPETTANZA_BASE_FERIE = 160.0
+SPETTANZA_BASE_PAR = 104.0
+BONUS_FERIE_ANZIANITA_10 = 8.0
+BONUS_FERIE_ANZIANITA_18 = 40.0
+BONUS_PATRONO = 8.0
+SOGLIA_ANZIANITA_10 = 10.0
+SOGLIA_ANZIANITA_18 = 18.0
+# Prima del 2008 l'anzianita' si conta dal 1/1/2008 (limite di discriminante)
+DATA_LIMITE_ANZIANITA = (2007, 12, 31)
+DATA_PARTENZA_ANZIANITA = (2008, 1, 1)
+
+# Nomi dei mesi in italiano (indice 0 = Gennaio)
+MESI_NOMI_IT = [
+    "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+    "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre",
+]
+# Mappa mese italiano (minuscolo) -> numero mese
+MESI_IT_NUMERO = {nome.lower(): i + 1 for i, nome in enumerate(MESI_NOMI_IT)}
+
 # --- ETICHETTE E CODICI ZUCCHETTI ---
 TIPO_FERIE = "FERIE"
 TIPO_PAR = "PAR"

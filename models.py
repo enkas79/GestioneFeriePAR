@@ -9,12 +9,13 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import urllib.request
 import urllib.error
 import base64
 import hashlib
 from datetime import date
-from typing import Dict, List, Set, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple, Any
 from PyQt6.QtCore import QDate
 
 import config
@@ -104,11 +105,13 @@ class EncryptionManager:
     def is_encrypted(file_path: str) -> bool:
         """Verifica se un file è cifrato (contiene dati binari)."""
         try:
+            if os.path.getsize(file_path) < 4:
+                return False
             with open(file_path, 'rb') as f:
                 first_bytes = f.read(4)
                 # I file JSON iniziano con '{' o '['
                 return not (first_bytes.startswith(b'{') or first_bytes.startswith(b'['))
-        except Exception:
+        except OSError:
             return False
 
 
@@ -137,10 +140,12 @@ class UpdateManager:
                         config.logger.warning("Nessun tag di versione trovato nella risposta GitHub.")
                         return False, config.APP_VERSION, ""
 
-                    # Funzione interna per estrarre solo i numeri dalla stringa (es. "v1.0.2" -> (1, 0, 2))
-                    def parse_version(v: str) -> Tuple[int, ...]:
+                    # Funzione interna per estrarre i numeri e normalizzarli a 3 componenti
+                    # (es. "v1.0" -> (1, 0, 0), "v2.4.0" -> (2, 4, 0)) per confronti corretti.
+                    def parse_version(v: str) -> Tuple[int, int, int]:
                         numeri = re.findall(r'\d+', v)
-                        return tuple(map(int, numeri)) if numeri else (0,)
+                        componenti = (list(map(int, numeri)) + [0, 0, 0])[:3]
+                        return (componenti[0], componenti[1], componenti[2])
 
                     v_latest = parse_version(latest_version)
                     v_current = parse_version(config.APP_VERSION)
@@ -186,11 +191,7 @@ class CalendarManager:
         self.date_collettive.clear()
         self.tipi_collettivi.clear()
 
-        mesi_it: Dict[str, int] = {
-            "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
-            "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
-            "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12
-        }
+        mesi_it: Dict[str, int] = config.MESI_IT_NUMERO
 
         anno_corrente = date.today().year
 
@@ -433,18 +434,33 @@ class DataManager:
             # Salva con crittografia se disponibile e password impostata
             if HAS_CRYPTOGRAPHY and self.encryption_manager and self.password:
                 json_data = json.dumps(payload, indent=4, ensure_ascii=False)
-                encrypted_data = self.encryption_manager.encrypt(json_data)
-                with open(path, 'wb') as f:
-                    f.write(encrypted_data)
+                dati = self.encryption_manager.encrypt(json_data)
+                mode = 'wb'
                 config.logger.info(f"Dati salvati con crittografia in {path}")
             else:
                 # Salva in chiaro (fallback)
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(payload, f, indent=4, ensure_ascii=False)
+                dati = json.dumps(payload, indent=4, ensure_ascii=False)
+                mode = 'w'
                 if not HAS_CRYPTOGRAPHY:
                     config.logger.warning(f"Dati salvati in chiaro in {path} (cryptography non installato)")
                 elif not self.password:
                     config.logger.warning(f"Dati salvati in chiaro in {path} (nessuna password fornita)")
+
+            # Scrittura atomica: prima su file temporaneo poi rename, cosi' un
+            # crash a meta' scrittura non corrompe il database esistente.
+            fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or '.', prefix='.tmp_')
+            try:
+                if mode == 'wb':
+                    with os.fdopen(fd, mode) as f:
+                        f.write(dati)
+                else:
+                    with os.fdopen(fd, mode, encoding='utf-8') as f:
+                        f.write(dati)
+                os.replace(tmp_path, path)
+            except BaseException:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
         except Exception as e:
             config.logger.error(f"Errore salvataggio file {path}: {e}")
             raise OSError(f"Impossibile salvare il file: {e}")
@@ -526,7 +542,7 @@ class DataManager:
             oggi = date.today()
 
         calc = CalcolatoreLogica()
-        sp_ferie, sp_par = calc.calcola_spettanze(data_assunzione, includi_patrono)
+        sp_ferie, sp_par = calc.calcola_spettanze(data_assunzione, includi_patrono, data_riferimento=oggi)
         mesi = calc.calcola_mesi_maturati(data_assunzione, oggi)
 
         god_f_cal, god_p_cal = 0.0, 0.0
@@ -536,7 +552,7 @@ class DataManager:
         anno_precedente = oggi.year - 1
 
         # Unisce storico reale e calendario collettivo
-        assenze = self._assenze_effettive_e_programmate()
+        assenze = self.assenze_effettive_e_programmate()
 
         for x in assenze:
             anno_assenza = x["data"].year()
@@ -596,7 +612,7 @@ class DataManager:
             "par": risultato_par
         }
 
-    def _assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
+    def assenze_effettive_e_programmate(self) -> List[Dict[str, Any]]:
         """
         Unisce storico reale, assenze personali programmate e calendario collettivo,
         evitando doppi conteggi.
@@ -627,10 +643,12 @@ class DataManager:
 
     def esporta_csv(self, path: str) -> bool:
         """Esporta lo storico delle assenze in formato CSV delimitato da punto e virgola."""
+        import csv
         try:
             oggi = QDate.currentDate()
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write("Data;Tipo;Ore;Info\n")
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerow(["Data", "Tipo", "Ore", "Info"])
                 for item in self.storico_assenze:
                     is_cal = self.calendario.is_collettivo(item['data'])
                     if is_cal:
@@ -639,10 +657,13 @@ class DataManager:
                         info = "(Programmata)"
                     else:
                         info = ""
-                    f.write(
-                        f"{item['data'].toString(config.DATE_FORMAT_DISPLAY)};"
-                        f"{item['tipo']};{item['ore']:.2f};{info}\n"
-                    )
+                    ore_formattate = f"{item['ore']:.2f}".replace('.', ',')
+                    writer.writerow([
+                        item['data'].toString(config.DATE_FORMAT_DISPLAY),
+                        item['tipo'],
+                        ore_formattate,
+                        info,
+                    ])
             return True
         except OSError:
             return False
@@ -651,11 +672,7 @@ class DataManager:
 class BustaPageParser:
     """Gestisce il parsing intelligente dei cedolini Zucchetti in formato PDF."""
 
-    MESI_ITA = {
-        "GENNAIO": 1, "FEBBRAIO": 2, "MARZO": 3, "APRILE": 4,
-        "MAGGIO": 5, "GIUGNO": 6, "LUGLIO": 7, "AGOSTO": 8,
-        "SETTEMBRE": 9, "OTTOBRE": 10, "NOVEMBRE": 11, "DICEMBRE": 12
-    }
+    MESI_ITA = {nome.upper(): i + 1 for i, nome in enumerate(config.MESI_NOMI_IT)}
 
     def leggi_testo(self, file_path: str) -> str:
         """Legge ed estrae tutto il testo da un file PDF o TXT."""
@@ -743,29 +760,39 @@ class CalcolatoreLogica:
         return 0
 
     @staticmethod
-    def calcola_spettanze(d_ass: date, includi_patrono: bool) -> Tuple[float, float]:
-        """Calcola i diritti annui maturabili per Ferie e PAR basandosi sull'anzianità."""
-        today = date.today()
-        limite_disc = date(2007, 12, 31)
-        start_anz = date(2008, 1, 1) if d_ass <= limite_disc else d_ass
-        anni_ferie = (today - start_anz).days / 365.25
+    def calcola_spettanze(
+        d_ass: date, includi_patrono: bool, data_riferimento: Optional[date] = None
+    ) -> Tuple[float, float]:
+        """Calcola i diritti annui maturabili per Ferie e PAR basandosi sull'anzianità.
 
-        spettanza_ferie = 160.0
-        if anni_ferie > 18:
-            spettanza_ferie += 40.0
-        elif anni_ferie > 10:
-            spettanza_ferie += 8.0
+        Args:
+            d_ass (date): Data di assunzione.
+            includi_patrono (bool): Se includere il S. Patrono (+8h).
+            data_riferimento (date, optional): Data usata per il calcolo dell'anzianità.
+                Default: date.today(). Utile per test deterministici.
+        """
+        if data_riferimento is None:
+            data_riferimento = date.today()
+        limite_disc = date(*config.DATA_LIMITE_ANZIANITA)
+        start_anz = date(*config.DATA_PARTENZA_ANZIANITA) if d_ass <= limite_disc else d_ass
+        anni_ferie = (data_riferimento - start_anz).days / 365.25
+
+        spettanza_ferie = config.SPETTANZA_BASE_FERIE
+        if anni_ferie > config.SOGLIA_ANZIANITA_18:
+            spettanza_ferie += config.BONUS_FERIE_ANZIANITA_18
+        elif anni_ferie > config.SOGLIA_ANZIANITA_10:
+            spettanza_ferie += config.BONUS_FERIE_ANZIANITA_10
         if includi_patrono:
-            spettanza_ferie += 8.0
+            spettanza_ferie += config.BONUS_PATRONO
 
-        spettanza_par = 104.0
+        spettanza_par = config.SPETTANZA_BASE_PAR
         return spettanza_ferie, spettanza_par
 
     @staticmethod
     def fifo_avanzato(diritto: float, res_ap: float, maturato: float,
                       goduto_normale: float, goduto_cal: float,
                       ap_scalato_anno_precedente: float = 0.0,
-                      res_ap_iniziale: float | None = None,
+                      res_ap_iniziale: Optional[float] = None,
                       goduto_programmato_personale: float = 0.0) -> Dict[str, float]:
         """
         Esegue lo scarico delle ore privilegiando il Residuo AP prima del Maturato corrente.
