@@ -322,6 +322,8 @@ class DataManager:
         self.res_ap_par: float = 0.0
         self.includi_patrono: bool = True
         self.storico_assenze: List[Dict[str, Any]] = []
+        # Parte economica (cedolini importati): separata da ferie/PAR.
+        self.storico_economico: List[Dict[str, Any]] = []
         self.password = password
         self.encryption_manager = EncryptionManager(password) if HAS_CRYPTOGRAPHY and password else None
         self.reset()
@@ -335,6 +337,7 @@ class DataManager:
         self.res_ap_par = 0.0
         self.includi_patrono = True
         self.storico_assenze.clear()
+        self.storico_economico.clear()
         self.calendario.aggiorna_da_testo("")
 
     def _crea_payload(self) -> Dict[str, Any]:
@@ -353,6 +356,7 @@ class DataManager:
             "res_ap_par_start": self.res_ap_par,
             "includi_patrono": self.includi_patrono,
             "storico_assenze": storico_serial,
+            "storico_economico": self.storico_economico,
             "testo_mail_calendario": self.calendario.testo_mail
         }
 
@@ -380,6 +384,10 @@ class DataManager:
                     "ore": float(item["ore"])
                 })
         self.storico_assenze.sort(key=lambda x: x["data"])
+
+        # Parte economica: retrocompatibile con i database senza la chiave.
+        self.storico_economico = [r for r in raw.get("storico_economico", []) if isinstance(r, dict)]
+        self.storico_economico.sort(key=lambda r: (r.get("anno", 0), r.get("mese", 0)))
 
     def _leggi_payload_da_file(self, path: str) -> Dict[str, Any]:
         """Legge e restituisce un payload JSON da file (con decrittografia se necessario)."""
@@ -641,6 +649,31 @@ class DataManager:
         righe.sort(key=lambda x: (x["data"], x["tipo"], x.get("origine", "")))
         return righe
 
+    def upsert_record_economico(self, record: Dict[str, Any]) -> bool:
+        """Inserisce o sostituisce il record economico di un mese (chiave anno+mese).
+
+        Returns:
+            bool: True se e' stato inserito un nuovo mese, False se era un aggiornamento.
+        """
+        anno, mese = record.get("anno"), record.get("mese")
+        for i, r in enumerate(self.storico_economico):
+            if r.get("anno") == anno and r.get("mese") == mese:
+                self.storico_economico[i] = record
+                self.storico_economico.sort(key=lambda x: (x.get("anno", 0), x.get("mese", 0)))
+                return False
+        self.storico_economico.append(record)
+        self.storico_economico.sort(key=lambda x: (x.get("anno", 0), x.get("mese", 0)))
+        return True
+
+    def rimuovi_record_economico(self, anno: int, mese: int) -> bool:
+        """Rimuove il record economico di un mese. True se trovato e rimosso."""
+        prima = len(self.storico_economico)
+        self.storico_economico = [
+            r for r in self.storico_economico
+            if not (r.get("anno") == anno and r.get("mese") == mese)
+        ]
+        return len(self.storico_economico) < prima
+
     def esporta_csv(self, path: str) -> bool:
         """Esporta lo storico delle assenze in formato CSV delimitato da punto e virgola."""
         import csv
@@ -739,6 +772,218 @@ class BustaPageParser:
                 except ValueError:
                     continue
         return result
+
+
+class BustaPagaEconomicaParser:
+    """Parsing delle voci economiche dei cedolini Zucchetti (parte economica).
+
+    Tenuto separato da BustaPageParser (ferie/PAR): estrae anagrafica retributiva,
+    voci di competenza/trattenuta, contributi, addizionali, TFR e totali del mese.
+    """
+
+    _NUM = r"-?\d[\d\.]*,\d{2,6}"
+    # Codici che non sono voci economiche ma ratei/etichette della stessa pagina.
+    _CODICI_ESCLUSI = {"TFR901", "W90003"}
+
+    def parse(self, text: str) -> Dict[str, Any]:
+        """Analizza il testo della busta paga e restituisce le sole voci economiche."""
+        tc = text.replace('"', '').replace("'", "")
+        linee = tc.split("\n")
+        result: Dict[str, Any] = {
+            "mese": None, "anno": None, "mese_str": "",
+            "anagrafica": {}, "voci": [], "contributi_dipendente": [],
+            "contributi_azienda": [], "addizionali": [], "oneri_ctb": [],
+            "tfr": {}, "totali": {},
+        }
+
+        m = re.search(
+            r"(GENNAIO|FEBBRAIO|MARZO|APRILE|MAGGIO|GIUGNO|LUGLIO|AGOSTO|"
+            r"SETTEMBRE|OTTOBRE|NOVEMBRE|DICEMBRE)\s+(\d{4})",
+            tc, re.IGNORECASE
+        )
+        if m:
+            result["mese_str"] = m.group(1).capitalize()
+            result["mese"] = self.MESI_ITA.get(m.group(1).upper())
+            result["anno"] = int(m.group(2))
+
+        # Colonna di inizio "TRATTENUTE" dall'header: usata per classificare le voci.
+        col_tratt = None
+        for linea in linee:
+            if "T R A T T E N U T E" in linea:
+                col_tratt = linea.find("T R A T T E N U T E")
+                break
+
+        self._parse_anagrafica(linee, result)
+        self._parse_sezioni(linee, result, col_tratt)
+
+        if result["anagrafica"].get("minimo_retributivo"):
+            result["anagrafica"]["ral_stimata"] = round(
+                result["anagrafica"]["minimo_retributivo"] * config.MENSILITA_ANNUE, 2
+            )
+        return result
+
+    MESI_ITA = {nome.upper(): i + 1 for i, nome in enumerate(config.MESI_NOMI_IT)}
+
+    def _parse_anagrafica(self, linee: List[str], result: Dict[str, Any]) -> None:
+        """Estrae matricola, nominativo, date, qualifica, livello, minimo retributivo e ore lavorate."""
+        ana = result["anagrafica"]
+        for linea in linee:
+            m = re.search(r"^\s+(\d{3,6})\s+([A-ZÀÈÉÌÒÙ ]+?)\s{2,}([A-Z0-9]{16})\s+\S", linea)
+            if m and "matricola" not in ana:
+                ana["matricola"] = m.group(1)
+                ana["nominativo"] = m.group(2).strip()
+                ana["codice_fiscale"] = m.group(3)
+            m = re.search(r"^\s+\d{3,6}\s+(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s{2,}(.+?)\s{2,}(\S+)\s*$", linea)
+            if m and "data_assunzione" not in ana:
+                ana["data_nascita"] = m.group(1)
+                ana["data_assunzione"] = m.group(2)
+                ana["qualifica"] = m.group(3).strip()
+                ana["livello"] = m.group(4).strip()
+            m = re.search(r"Minimo retr\.\s+(" + self._NUM + r")", linea)
+            if m:
+                ana["minimo_retributivo"] = utils.parse_numero_it(m.group(1))
+            # Riga riepilogo ferie/ore: "73 50  22 00 176 00  24 00  24  5" -> ORE LAV. = 176,00
+            toks = re.findall(r"\d+", linea)
+            if re.match(r"^\s{10,}\d{2,3}\s\d{2}\s{2,}", linea) and len(toks) >= 8 and "Minimo" not in linea:
+                ana["ore_lavorate"] = utils.parse_numero_it(toks[4] + "," + toks[5])
+
+    def _parse_sezioni(self, linee: List[str], result: Dict[str, Any], col_tratt: Optional[int]) -> None:
+        """Scorre le sezioni del cedolino (voci, contributi, addizionali, TFR, totali)."""
+        in_contributi = False
+        in_addizionali = False
+        in_ctb = False
+        for linea in linee:
+            if "Aliquote" in linea and "Imponibili" in linea:
+                in_contributi, in_ctb, in_addizionali = True, False, False
+                continue
+            if "Ctb. ded." in linea:
+                in_contributi, in_ctb, in_addizionali = False, True, False
+                continue
+            if re.match(r"^\s*Addizionali\s+-", linea):
+                in_contributi, in_ctb, in_addizionali = False, False, True
+                continue
+            if re.match(r"^\s*Imposta sul", linea):
+                in_contributi, in_ctb, in_addizionali = False, False, False
+                continue
+
+            if in_contributi and self._parse_contributo(linea, result):
+                continue
+            if in_ctb and self._parse_onere_ctb(linea, result):
+                continue
+            if in_addizionali and self._parse_addizionale(linea, result):
+                continue
+            if self._parse_tfr(linea, result):
+                continue
+            if not in_contributi and not in_ctb and not in_addizionali:
+                if self._parse_voce(linea, result, col_tratt):
+                    continue
+            self._parse_totali(linea, result)
+
+    def _parse_voce(self, linea: str, result: Dict[str, Any], col_tratt: Optional[int]) -> bool:
+        """Riconosce una riga voce retribuzione: CODICE DESCRIZIONE [ore] [unitario] importo."""
+        mv = re.match(
+            r"^\s{2,}([A-Z0-9]{3,6})\s{1,3}(.+?)\s{2,}(" + self._NUM + r"(?:\s+" + self._NUM + r"){0,2})\s*$",
+            linea,
+        )
+        if not mv:
+            return False
+        codice, desc, nums_str = mv.group(1), mv.group(2).strip(), mv.group(3)
+        if codice in self._CODICI_ESCLUSI or desc.startswith(":") or "Res.AP" in desc:
+            return False
+        nums = list(re.finditer(self._NUM, nums_str))
+        vals = [utils.parse_numero_it(n.group()) for n in nums]
+        end_col = linea.find(nums_str) + nums[-1].end()
+        if col_tratt is not None and end_col >= col_tratt:
+            categoria = "trattenuta"
+        elif len(vals) >= 2:
+            categoria = "competenza"
+        else:
+            categoria = "figurativo"
+        if "Imponibile" in desc:
+            categoria = "figurativo"
+        result["voci"].append({
+            "codice": codice,
+            "descrizione": desc,
+            "categoria": categoria,
+            "ore": vals[0] if len(vals) >= 2 else None,
+            "importo_unitario": vals[1] if len(vals) >= 3 else (vals[0] if len(vals) == 2 else None),
+            "importo": vals[-1],
+        })
+        if codice == "W99901" and len(vals) >= 3:
+            result["anagrafica"]["paga_oraria"] = vals[1]
+        return True
+
+    def _parse_contributo(self, linea: str, result: Dict[str, Any]) -> bool:
+        """Riga contributo con flag -c/DIP (a carico dipendente) o -c/AZI (a carico azienda)."""
+        mc = re.match(r"^\s{2,}(\d{3}|[A-Z]\d+)\s+(.+?)\s+(-c/DIP|-c/AZI)(.*)$", linea)
+        if not mc:
+            return False
+        nums = [utils.parse_numero_it(x) for x in re.findall(self._NUM, mc.group(4))]
+        voce = {"codice": mc.group(1), "descrizione": mc.group(2).strip()}
+        if mc.group(3) == "-c/DIP":
+            voce.update(
+                imponibile=nums[0] if len(nums) >= 2 else None,
+                aliquota=nums[1] if len(nums) >= 3 else (nums[0] if len(nums) == 1 else None),
+                importo=nums[-1] if len(nums) >= 2 else None,
+            )
+            result["contributi_dipendente"].append(voce)
+        else:
+            voce.update(
+                imponibile=nums[0] if len(nums) >= 2 else None,
+                aliquota=nums[-1] if nums else None,
+                importo=None,
+            )
+            result["contributi_azienda"].append(voce)
+        return True
+
+    def _parse_onere_ctb(self, linea: str, result: Dict[str, Any]) -> bool:
+        """Riga della sezione 'Ctb. ded. Ctb.non ded.' (oneri a carico azienda)."""
+        m = re.match(r"^\s{2,}([A-Z0-9]{3,6})\s+(.+?)\s+(" + self._NUM + r")\s*$", linea)
+        if not m:
+            return False
+        result["oneri_ctb"].append({
+            "codice": m.group(1), "descrizione": m.group(2).strip(),
+            "importo": utils.parse_numero_it(m.group(3)),
+        })
+        return True
+
+    def _parse_addizionale(self, linea: str, result: Dict[str, Any]) -> bool:
+        """Riga addizionale regionale/comunale: linea'ultimo numero e' la trattenuta del mese."""
+        ma = re.match(r"^\s{2,}(\d{3})\s+(Addizionale\s+\w+)\s+(\d{4})\s+(.*)$", linea)
+        if not ma:
+            return False
+        nums = re.findall(self._NUM, ma.group(4))
+        if not nums:
+            return False
+        result["addizionali"].append({
+            "descrizione": ma.group(2), "anno": int(ma.group(3)),
+            "importo": utils.parse_numero_it(nums[-1]),
+        })
+        return True
+
+    def _parse_tfr(self, linea: str, result: Dict[str, Any]) -> bool:
+        """Righe TFR901 (imponibile TFR) e W90003 (quota TFR del mese)."""
+        mt = re.match(r"^\s{2,}TFR901\s+Imponibile TFR\s+(" + self._NUM + r")\s*$", linea)
+        if mt:
+            result["tfr"]["imponibile"] = utils.parse_numero_it(mt.group(1))
+            return True
+        mt = re.match(r"^\s{2,}W90003\s+TFR\b", linea)
+        if mt:
+            nums = re.findall(self._NUM, linea)
+            if nums:
+                result["tfr"]["quota"] = utils.parse_numero_it(nums[-1])
+                return True
+        return False
+
+    def _parse_totali(self, linea: str, result: Dict[str, Any]) -> None:
+        """Totale competenze/trattenute dalla riga 'Emolumenti correnti' e netto dalla riga ****netto."""
+        me = re.search(r"Emolumenti correnti\s+(" + self._NUM + r")\s+(" + self._NUM + r")", linea)
+        if me:
+            result["totali"]["tot_competenze"] = utils.parse_numero_it(me.group(1))
+            result["totali"]["tot_trattenute"] = utils.parse_numero_it(me.group(2))
+        mn = re.search(r"\*{4}(" + self._NUM + r")", linea)
+        if mn:
+            result["totali"]["netto"] = utils.parse_numero_it(mn.group(1))
 
 
 class CalcolatoreLogica:

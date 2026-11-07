@@ -23,7 +23,8 @@ import config
 import report
 import utils
 from dialogs import CalendarioCollettivoDialog
-from models import DataManager, BustaPageParser, CalcolatoreLogica, HAS_PYPDF, UpdateManager, HAS_CRYPTOGRAPHY
+from models import (DataManager, BustaPageParser, BustaPagaEconomicaParser,
+                    CalcolatoreLogica, HAS_PYPDF, UpdateManager, HAS_CRYPTOGRAPHY)
 
 # Configura logging per la UI
 ui_logger = logging.getLogger("ui")
@@ -67,6 +68,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         # La password può essere impostata tramite un dialog all'avvio
         self.dm = DataManager()
         self.parser = BustaPageParser()
+        self.eco_parser = BustaPagaEconomicaParser()
         self.calc = CalcolatoreLogica()
 
         self.mese_busta = config.MESI_NOMI_IT[date.today().month - 1]
@@ -85,6 +87,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         self.crea_sezione_anagrafica()
         self.crea_sezione_inserimento()
         self.crea_sezione_risultati()
+        self.crea_sezione_economica()
         self.crea_sezione_comandi()
 
         self._registra_shortcuts()
@@ -667,6 +670,87 @@ class CalcolatoreFeriePAR(QMainWindow):
         h_layout.addWidget(group_saldi, 70)
         self.main_layout.addLayout(h_layout)
 
+    def _formatta_euro(self, valore: Optional[float]) -> str:
+        """Formatta un importo in euro in stile italiano (es. 1.234,56 €)."""
+        if valore is None:
+            return "-"
+        return f"{valore:.2f}".replace('.', ',') + " €"
+
+    def crea_sezione_economica(self) -> None:
+        """Sezione 'Parte Economica': riepilogo dei cedolini importati, separata da ferie/PAR."""
+        group = QGroupBox("3. Parte Economica (Cedolini importati)")
+        vbox = QVBoxLayout()
+
+        lbl = QLabel("Importa le buste paga (PDF) per popolare questa tabella: "
+                     "lordo, trattenute, contributi e netto di ogni mese.")
+        lbl.setStyleSheet("color: #666; font-style: italic;")
+        vbox.addWidget(lbl)
+
+        self.tab_economica = QTableWidget()
+        self.tab_economica.setObjectName("tab_economica")
+        self.tab_economica.setColumnCount(8)
+        self.tab_economica.setHorizontalHeaderLabels([
+            "Periodo", "Lordo\n(competenze)", "Trattenute", "Netto",
+            "Contributi\ndipendente", "Addizionali", "TFR\nquota", "RAL\nstimata"
+        ])
+        self.tab_economica.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tab_economica.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tab_economica.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tab_economica.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tab_economica.setAlternatingRowColors(True)
+        self.tab_economica.verticalHeader().setVisible(False)
+        vbox.addWidget(self.tab_economica)
+
+        hbox_btn = QHBoxLayout()
+        btn_rimuovi_eco = QPushButton("Rimuovi mese selezionato")
+        btn_rimuovi_eco.setObjectName("btn_rimuovi_eco")
+        btn_rimuovi_eco.clicked.connect(self.rimuovi_mese_economico)
+        hbox_btn.addStretch()
+        hbox_btn.addWidget(btn_rimuovi_eco)
+        vbox.addLayout(hbox_btn)
+
+        group.setLayout(vbox)
+        self.main_layout.addWidget(group)
+
+    def aggiorna_tabella_economica(self) -> None:
+        """Riempe la tabella economica con un record per ogni cedolino importato."""
+        self.tab_economica.setRowCount(0)
+        for rec in self.dm.storico_economico:
+            totali = rec.get("totali", {})
+            ana = rec.get("anagrafica", {})
+            contrib_dip = round(sum(c.get("importo") or 0.0 for c in rec.get("contributi_dipendente", [])), 2)
+            addizionali = round(sum(a.get("importo") or 0.0 for a in rec.get("addizionali", [])), 2)
+            row = self.tab_economica.rowCount()
+            self.tab_economica.insertRow(row)
+            periodo = f"{rec.get('mese_str', '')} {rec.get('anno', '')}".strip()
+            celle = [
+                periodo,
+                self._formatta_euro(totali.get("tot_competenze")),
+                self._formatta_euro(totali.get("tot_trattenute")),
+                self._formatta_euro(totali.get("netto")),
+                self._formatta_euro(contrib_dip),
+                self._formatta_euro(addizionali),
+                self._formatta_euro(rec.get("tfr", {}).get("quota")),
+                self._formatta_euro(ana.get("ral_stimata")),
+            ]
+            for col, testo in enumerate(celle):
+                item = QTableWidgetItem(testo)
+                item.setData(Qt.ItemDataRole.UserRole, (rec.get("anno"), rec.get("mese")))
+                self.tab_economica.setItem(row, col, item)
+
+    def rimuovi_mese_economico(self) -> None:
+        """Rimuove dal database il record economico del mese selezionato nella tabella."""
+        riga = self.tab_economica.currentRow()
+        if riga < 0:
+            return
+        item = self.tab_economica.item(riga, 0)
+        if item is None:
+            return
+        anno, mese = item.data(Qt.ItemDataRole.UserRole)
+        if self.dm.rimuovi_record_economico(anno, mese):
+            self.aggiorna_tabella_economica()
+            self.salva_dati_su_file()
+
     def crea_sezione_comandi(self) -> None:
         hbox = QHBoxLayout()
         hbox.addStretch()
@@ -711,6 +795,7 @@ class CalcolatoreFeriePAR(QMainWindow):
 
         self._aggiorna_combo_anni()
         self.aggiorna_tabella_storico()
+        self.aggiorna_tabella_economica()
 
     def _aggiorna_combo_anni(self) -> None:
         anni = sorted(
@@ -1019,6 +1104,7 @@ class CalcolatoreFeriePAR(QMainWindow):
         progress.show()
 
         ass_agg_totali = 0
+        mesi_economici = 0
         file_processati = 0
         errori = []
 
@@ -1034,6 +1120,15 @@ class CalcolatoreFeriePAR(QMainWindow):
                 ui_logger.info(f"Elaborazione file: {file_path}")
                 testo = self.parser.leggi_testo(file_path)
                 dati = self.parser.parse(testo)
+
+                # Parte economica (separata da ferie/PAR): un record per mese di cedolino
+                eco = self.eco_parser.parse(testo)
+                if eco.get("mese") and eco.get("anno"):
+                    if self.dm.upsert_record_economico(eco):
+                        mesi_economici += 1
+                        ui_logger.info(
+                            f"Record economico inserted: {eco['mese_str']} {eco['anno']}"
+                        )
 
                 if dati.get("ferie"):
                     self.dm.res_ap_ferie = dati["ferie"]["res_ap"]
@@ -1066,10 +1161,12 @@ class CalcolatoreFeriePAR(QMainWindow):
             self.dm.storico_assenze.sort(key=lambda x: x["data"])
             self._aggiorna_combo_anni()
             self.aggiorna_tabella_storico()
+            self.aggiorna_tabella_economica()
             self.salva_dati_su_file()
             self.calcola()
 
-            msg = f"Elaborati {file_processati} file. {ass_agg_totali} nuove assenze."
+            msg = (f"Elaborati {file_processati} file. {ass_agg_totali} nuove assenze. "
+                   f"{mesi_economici} nuovi mesi economici.")
             if errori:
                 msg += f"\n\nErrore su: {', '.join(errori)}"
             QMessageBox.information(self, "Importazione", msg)

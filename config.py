@@ -72,6 +72,10 @@ MAX_BACKUP_COUNT = 3  # numero di backup rotanti mantenuti (.bak, .bak.1, .bak.2
 # --- REGOLE DI BUSINESS ---
 MAX_ORE_GIORNALIERE = 8.0
 
+# Numero di mensilita' usato per stimare la RAL dal minimo retributivo mensile
+# della busta paga (CCNL Commercio: 13 mensilita').
+MENSILITA_ANNUE = 13
+
 # Spettanze annue base (ore) e bonus per anzianita'
 SPETTANZA_BASE_FERIE = 160.0
 SPETTANZA_BASE_PAR = 104.0
