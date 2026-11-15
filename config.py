@@ -9,13 +9,24 @@ import shutil
 import sys
 import logging
 
+# --- PERCORSO BASE DELLE RISORSE ---
+# Da sorgente le risorse stanno accanto ai moduli; in un eseguibile PyInstaller
+# (sys.frozen) sono impacchettate in sys._MEIPASS (cartella "_internal" in onedir).
+def _resource_base() -> str:
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(__file__)
+
+
 # --- INFO VERSIONE E AGGIORNAMENTI ---
-# Legge la versione da version.txt per evitare duplicazione
+# Legge la versione da version.txt per evitare duplicazione.
+# Il fallback deve restare allineato a version.txt (verificato da un test).
+_FALLBACK_APP_VERSION = "2.7.0"
 try:
-    with open(os.path.join(os.path.dirname(__file__), "version.txt"), "r") as f:
+    with open(os.path.join(_resource_base(), "version.txt"), "r") as f:
         APP_VERSION = f.read().strip()
 except Exception:
-    APP_VERSION = "2.4.0"  # Fallback se version.txt non esiste
+    APP_VERSION = _FALLBACK_APP_VERSION  # Fallback se version.txt non esiste
 
 # Sostituisci questi due valori con i dati reali del tuo account GitHub
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "enkas79")
@@ -25,11 +36,9 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/rel
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 
 # --- ICONA APPLICAZIONE ---
-# Risolve icon.ico sia in esecuzione da sorgente sia da eseguibile PyInstaller
-# (dove non esiste __file__ utilizzabile: le risorse stanno accanto all'exe).
+# Risolve icon.ico sia da sorgente sia da eseguibile PyInstaller (risorse in _MEIPASS).
 def _get_icon_path() -> str:
-    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
-    path = os.path.join(base, "icon.ico")
+    path = os.path.join(_resource_base(), "icon.ico")
     return path if os.path.exists(path) else ""
 
 
@@ -71,10 +80,6 @@ MAX_BACKUP_COUNT = 3  # numero di backup rotanti mantenuti (.bak, .bak.1, .bak.2
 
 # --- REGOLE DI BUSINESS ---
 MAX_ORE_GIORNALIERE = 8.0
-
-# Numero di mensilita' usato per stimare la RAL dal minimo retributivo mensile
-# della busta paga (CCNL Commercio: 13 mensilita').
-MENSILITA_ANNUE = 13
 
 # Spettanze annue base (ore) e bonus per anzianita'
 SPETTANZA_BASE_FERIE = 160.0

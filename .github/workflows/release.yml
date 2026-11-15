@@ -39,8 +39,8 @@ jobs:
     - name: Installa le librerie necessarie
       run: |
         python -m pip install --upgrade pip
-        # AGGIUNTO Pillow qui
-        pip install PyQt6 pypdf Pillow pyinstaller
+        # AGGIUNTO Pillow qui; cryptography serve all'app (requirements.txt) e va impacchettata
+        pip install PyQt6 pypdf Pillow cryptography pyinstaller
 
     - name: Creazione Cartella Eseguibile (PyInstaller)
       shell: bash
@@ -52,8 +52,9 @@ jobs:
         else
           echo "Nessuna icona trovata: eseguo la build standard senza icona."
         fi
+        # version.txt va impacchettato: config.py lo legge da _MEIPASS nell'eseguibile
         # AGGIUNTI I FLAG --hidden-import E --collect-all PER PIL E pypdf
-        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --add-data version.txt;. --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
 
     - name: Creazione script Inno Setup (.iss)
       run: |
@@ -129,8 +130,8 @@ jobs:
     - name: Installa le librerie necessarie
       run: |
         python -m pip install --upgrade pip
-        # AGGIUNTO Pillow qui
-        pip install PyQt6 pypdf Pillow pyinstaller
+        # AGGIUNTO Pillow qui; cryptography serve all'app (requirements.txt) e va impacchettata
+        pip install PyQt6 pypdf Pillow cryptography pyinstaller
 
     - name: Creazione Eseguibile Linux (PyInstaller)
       shell: bash
@@ -143,8 +144,9 @@ jobs:
         else
           echo "Nessuna icona trovata: eseguo la build standard senza icona."
         fi
+        # version.txt va impacchettato: config.py lo legge da _MEIPASS nell'eseguibile
         # AGGIUNTI I FLAG --hidden-import E --collect-all PER PIL E pypdf
-        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --add-data version.txt:. --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
 
     - name: Impacchettamento nel formato Debian (.deb)
       shell: bash
