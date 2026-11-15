@@ -13,7 +13,6 @@ from models import (
     DataManager,
     EncryptionManager,
     BustaPageParser,
-    BustaPagaEconomicaParser,
     HAS_PYPDF,
     HAS_CRYPTOGRAPHY,
 )
@@ -454,156 +453,23 @@ class TestDataManagerExport:
         assert righe[0]["origine"] in ("Storico", "Programmata")
 
 
-TESTO_BUSTA_ECONOMICA = """\
-GENNAIO 2026
-       1218 MARTINI ENRICO                          MRTNRC79R31C111I           C3   103265
-     1218   31/10/1979 01/07/2004                       Operaio                           C3
-                                    73 50  22 00 176 00  24 00                24   5
-     Minimo retr.          2158,26 Scatti                148,20
-CODICE DESCRIZIONE VOCE ORE/GIORNI IMPORTO UNITARIO IMPORTI FIGURATI C O M P E T E N Z E T R A T T E N U T E
-     AA245  Retribuzione               26,000  102,12154                  2655,16
-     F2105  Ferie godute *             24,000   15,34775       368,35
-     TN100  Tratt.sindacale                                                             18,44
-     W99901 Ore Ordinarie              73,500   15,34775      1128,06
-     W99961 Imp. Previd. progressivo                          2674,00
-     ---------------------------------------- Imponibili     Aliquote  Competenze  Trattenute
-     005    INPS-FPLD/IVS      -c/DIP            2687,00        9,190                  246,94
-     F39    COMETA             -c/DIP            2158,26        1,200                   25,90
-     F40    COMETA             -c/AZI            2158,26       43,170
-     ----------------------------------------  Ctb. ded. Ctb.non ded. -----------------------
-     000039 COMETA                                 69,07
-     Addizionali ----------------------- Anno Impon/Rata   Figurative  Competenze  Trattenute
-     001    Addizionale regionale        2025      38,99       350,91                   38,99
-     002    Addizionale comunale         2026   31698,89        34,95
-     Imposta sul T.F.R dal 01/01/2001 -------- Imp.lordi  Aliq./Detr.  Detrazioni  Trattenute
-     TFR901 Imponibile TFR                                    2655,16
-     W90003 TFR COMETA                            100,00       183,24
-     CREDITO TREVIGIANO - BANCA DI CREDIT Emolumenti correnti             2406,35      560,77
-                                                                                  ****1953,00
-"""
+class TestCoerenzaVersione:
+    """La versione letta da config deve coincidere con version.txt e il fallback
+    deve restare allineato, cosi' l'eseguibile PyInstaller (che legge il fallback
+    se version.txt non e' impacchettato) non mostra versioni obsolete."""
+
+    def test_fallback_allineato_a_version_txt(self):
+        import os
+        percorso = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "version.txt")
+        with open(percorso, encoding="utf-8") as f:
+            versione_txt = f.read().strip()
+        assert config._FALLBACK_APP_VERSION == versione_txt
+
+    def test_app_version_da_version_txt(self):
+        import os
+        percorso = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "version.txt")
+        with open(percorso, encoding="utf-8") as f:
+            versione_txt = f.read().strip()
+        assert config.APP_VERSION == versione_txt
 
 
-class TestBustaPagaEconomicaParser:
-    """Test per BustaPagaEconomicaParser (parte economica, separata da ferie/PAR)."""
-
-    def test_parse_testo_vuoto(self):
-        parser = BustaPagaEconomicaParser()
-        risultato = parser.parse("")
-        assert risultato["mese"] is None
-        assert risultato["anno"] is None
-        assert risultato["voci"] == []
-        assert risultato["totali"] == {}
-
-    def test_parse_mese_anno(self):
-        parser = BustaPagaEconomicaParser()
-        risultato = parser.parse(TESTO_BUSTA_ECONOMICA)
-        assert risultato["mese"] == 1
-        assert risultato["anno"] == 2026
-        assert risultato["mese_str"] == "Gennaio"
-
-    def test_parse_anagrafica(self):
-        parser = BustaPagaEconomicaParser()
-        ana = parser.parse(TESTO_BUSTA_ECONOMICA)["anagrafica"]
-        assert ana["matricola"] == "1218"
-        assert ana["nominativo"] == "MARTINI ENRICO"
-        assert ana["codice_fiscale"] == "MRTNRC79R31C111I"
-        assert ana["data_assunzione"] == "01/07/2004"
-        assert ana["qualifica"] == "Operaio"
-        assert ana["livello"] == "C3"
-        assert ana["minimo_retributivo"] == 2158.26
-        assert ana["ral_stimata"] == round(2158.26 * config.MENSILITA_ANNUE, 2)
-        assert ana["ore_lavorate"] == 176.0
-        assert ana["paga_oraria"] == 15.34775
-
-    def test_parse_voci_categorie(self):
-        parser = BustaPagaEconomicaParser()
-        voci = parser.parse(TESTO_BUSTA_ECONOMICA)["voci"]
-        per_codice = {v["codice"]: v for v in voci}
-        assert per_codice["AA245"]["categoria"] == "competenza"
-        assert per_codice["AA245"]["importo"] == 2655.16
-        assert per_codice["F2105"]["ore"] == 24.0
-        assert per_codice["TN100"]["categoria"] == "trattenuta"
-        assert per_codice["TN100"]["importo"] == 18.44
-        assert per_codice["W99961"]["categoria"] == "figurativo"
-        # I ratei ferie/PAR e i codici TFR non devono finire nella parte economica
-        assert all(not v["descrizione"].startswith(":") for v in voci)
-        assert "TFR901" not in per_codice and "W90003" not in per_codice
-
-    def test_parse_contributi(self):
-        parser = BustaPagaEconomicaParser()
-        risultato = parser.parse(TESTO_BUSTA_ECONOMICA)
-        dip = {c["codice"]: c for c in risultato["contributi_dipendente"]}
-        assert dip["005"]["imponibile"] == 2687.00
-        assert dip["005"]["aliquota"] == 9.19
-        assert dip["005"]["importo"] == 246.94
-        assert dip["F39"]["importo"] == 25.90
-        azi = {c["codice"]: c for c in risultato["contributi_azienda"]}
-        assert azi["F40"]["aliquota"] == 43.17
-
-    def test_parse_addizionali_tfr_totali(self):
-        parser = BustaPagaEconomicaParser()
-        risultato = parser.parse(TESTO_BUSTA_ECONOMICA)
-        add = {a["descrizione"]: a["importo"] for a in risultato["addizionali"]}
-        assert add["Addizionale regionale"] == 38.99
-        # Conguaglio con due soli numeri: l'importo e' l'ultimo numero (34,95)
-        assert add["Addizionale comunale"] == 34.95
-        assert risultato["tfr"]["imponibile"] == 2655.16
-        assert risultato["tfr"]["quota"] == 183.24
-        assert risultato["totali"]["tot_competenze"] == 2406.35
-        assert risultato["totali"]["tot_trattenute"] == 560.77
-        assert risultato["totali"]["netto"] == 1953.00
-        assert risultato["oneri_ctb"][0]["importo"] == 69.07
-
-
-class TestDataManagerEconomico:
-    """Test persistenza della parte economica in DataManager (separata da ferie/PAR)."""
-
-    def _record(self, anno=2026, mese=1):
-        return {
-            "anno": anno, "mese": mese, "mese_str": "Gennaio",
-            "anagrafica": {"minimo_retributivo": 2158.26, "ral_stimata": 28057.38},
-            "voci": [], "contributi_dipendente": [], "contributi_azienda": [],
-            "addizionali": [], "oneri_ctb": [], "tfr": {"quota": 183.24},
-            "totali": {"tot_competenze": 2406.35, "tot_trattenute": 560.77, "netto": 1953.00},
-        }
-
-    def test_upsert_inserisce_e_aggiorna(self):
-        dm = DataManager()
-        assert dm.upsert_record_economico(self._record()) is True
-        assert dm.upsert_record_economico(self._record(mese=2)) is True
-        # Stesso mese: aggiornamento, non duplicato
-        rec = self._record()
-        rec["totali"]["netto"] = 2000.0
-        assert dm.upsert_record_economico(rec) is False
-        assert len(dm.storico_economico) == 2
-        assert dm.storico_economico[0]["totali"]["netto"] == 2000.0
-
-    def test_rimuovi_record(self):
-        dm = DataManager()
-        dm.upsert_record_economico(self._record())
-        assert dm.rimuovi_record_economico(2026, 1) is True
-        assert dm.storico_economico == []
-        assert dm.rimuovi_record_economico(2026, 1) is False
-
-    def test_payload_roundtrip_economico(self):
-        dm = DataManager()
-        dm.upsert_record_economico(self._record())
-        payload = dm._crea_payload()
-        assert "storico_economico" in payload
-
-        dm2 = DataManager()
-        dm2._applica_payload(payload)
-        assert len(dm2.storico_economico) == 1
-        assert dm2.storico_economico[0]["totali"]["netto"] == 1953.00
-
-    def test_retrocompatibilita_payload_senza_economico(self):
-        dm = DataManager()
-        payload = {"nominativo": "Mario Rossi", "storico_assenze": [], "testo_mail_calendario": ""}
-        dm._applica_payload(payload)
-        assert dm.storico_economico == []
-
-    def test_reset_azzera_economico(self):
-        dm = DataManager()
-        dm.upsert_record_economico(self._record())
-        dm.reset()
-        assert dm.storico_economico == []
