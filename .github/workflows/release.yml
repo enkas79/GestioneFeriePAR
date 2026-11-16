@@ -1,11 +1,13 @@
 name: Compila e Rilascia Automaticamente
 
-# Si avvia in automatico SOLO quando viene modificato il file "version.txt" sul branch main
+# Si avvia in automatico quando cambia "version.txt" (nuova versione) o il workflow
+# stesso (fix alla pipeline di build) sul branch main
 on:
   push:
     branches: [ main ]
     paths:
       - 'version.txt'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
