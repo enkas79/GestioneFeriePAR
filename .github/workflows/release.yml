@@ -52,9 +52,11 @@ jobs:
         else
           echo "Nessuna icona trovata: eseguo la build standard senza icona."
         fi
-        # version.txt va impacchettato: config.py lo legge da _MEIPASS nell'eseguibile
+        # version.txt va impacchettato: config.py lo legge da _MEIPASS nell'eseguibile.
+        # Su Windows il separatore SOURCE;DEST va quotato: il ';' non quotato verrebbe
+        # interpretato da bash come separatore di comandi.
         # AGGIUNTI I FLAG --hidden-import E --collect-all PER PIL E pypdf
-        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --add-data version.txt;. --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
+        pyinstaller --onedir --noconsole --name=GestioneFeriePAR $ICON_ARGS --add-data "version.txt;." --hidden-import=PIL --collect-all=PIL --collect-all=pypdf main.py
 
     - name: Creazione script Inno Setup (.iss)
       run: |
